@@ -1,1 +1,1 @@
-{"config":{"step":{"user":{"title":"Connect GluMizan","data":{"base_url":"GluMizan API URL","callback_secret":"GluMizan callback trust secret","caregiver_user_id":"Authorized GluMizan caregiver ID"}}},"error":{"https_required":"Use an HTTPS GluMizan URL"}}}
+{"config":{"step":{"user":{"title":"Connect GluMizan","data":{"base_url":"GluMizan API URL","callback_secret":"GluMizan callback trust secret"}}},"error":{"https_required":"Use an HTTPS GluMizan URL"}}}

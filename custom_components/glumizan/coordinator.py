@@ -44,20 +44,38 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 current["episode"] = event["type"]
                 current["episode_id"] = payload.get("episodeId") or payload.get("activeEpisodeId")
             event_ids.append(event["id"])
+            await self.async_refresh_presence_context(alias)
         self.async_set_updated_data(self.patient_data)
         if new_aliases:
             async_dispatcher_send(self.hass, SIGNAL_PATIENTS_CHANGED, new_aliases)
+        else:
+            async_dispatcher_send(self.hass, SIGNAL_PATIENTS_CHANGED, list(self.patient_data))
         if event_ids:
-            headers = {"X-Home-Assistant-Signature": self.entry.data[CONF_CALLBACK_SECRET]}
+            headers = self._headers()
             async with self._session.post(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/events/ack", headers=headers, json={"eventIds": event_ids}) as response:
                 if response.status >= 300:
                     raise UpdateFailed("GluMizan event acknowledgement failed")
 
-    async def async_acknowledge(self, alias, episode_id):
-        headers = {"Idempotency-Key": str(uuid.uuid4()), "X-Home-Assistant-Signature": self.entry.data[CONF_CALLBACK_SECRET]}
-        if not episode_id:
-            raise UpdateFailed("No active GluMizan episode for this patient")
-        body = {"action": "caregiver.acknowledge", "patientAlias": alias, "episodeId": episode_id, "caregiverUserId": self.entry.data["caregiver_user_id"], "metadata": {"action": "caregiver_response"}}
+    def _headers(self):
+        return {"X-Home-Assistant-Signature": self.entry.data[CONF_CALLBACK_SECRET], "X-GluMizan-Installation-Id": self.entry.entry_id}
+
+    async def async_refresh_presence_context(self, alias):
+        async with self._session.get(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/patients/{alias}/presence", headers=self._headers()) as response:
+            if response.status < 300:
+                self.patient_data[alias]["caregivers"] = (await response.json()).get("caregivers", [])
+
+    async def async_command(self, alias, grant_id, action, episode_id=None):
+        headers = {"Idempotency-Key": str(uuid.uuid4()), **self._headers()}
+        body = {"action": action, "patientAlias": alias, "grantId": grant_id, "metadata": {"action": "caregiver_response"}}
+        if episode_id:
+            body["episodeId"] = episode_id
         async with self._session.post(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/commands", headers=headers, json=body) as response:
             if response.status >= 300:
-                raise UpdateFailed("GluMizan acknowledgement rejected")
+                raise UpdateFailed("GluMizan command rejected")
+        await self.async_refresh_presence_context(alias)
+        self.async_set_updated_data(self.patient_data)
+
+    async def async_acknowledge(self, alias, grant_id, episode_id):
+        if not episode_id:
+            raise UpdateFailed("No active GluMizan episode for this patient")
+        await self.async_command(alias, grant_id, "caregiver.acknowledge", episode_id)

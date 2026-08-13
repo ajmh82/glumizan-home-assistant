@@ -7,7 +7,6 @@ GluMizan brings authorized patient glucose information, freshness status, active
 - A working Home Assistant installation with HACS.
 - A GluMizan deployment that has enabled the Home Assistant bridge and can reach the Home Assistant instance over HTTPS.
 - The dedicated `HOME_ASSISTANT_CALLBACK_SECRET` shared with the GluMizan runtime.
-- The UUID of an authorized GluMizan caregiver.
 
 `HOME_ASSISTANT_INTEGRATION_TOKEN` is a Home Assistant bearer token kept only in the GluMizan runtime. Do not enter it into Home Assistant, this integration, YAML, Git, screenshots, or support requests.
 
@@ -31,7 +30,8 @@ The Config Flow asks for exactly these fields:
 
 - `base_url`: the GluMizan HTTPS API URL, normally `https://glumizan.com`.
 - `callback_secret`: the dedicated `HOME_ASSISTANT_CALLBACK_SECRET` value. Keep it private; never publish or share it.
-- `caregiver_user_id`: the UUID of the GluMizan caregiver authorized for the patient actions.
+
+The integration creates its stable installation identity automatically. A GluMizan administrator associates that installation with active caregiver grants in the GluMizan Home Assistant administration area; users never enter a caregiver UUID in Home Assistant. Revoked, paused, expired, or permission-disabled grants are denied by GluMizan automatically.
 
 ## Devices and entities
 
@@ -39,7 +39,8 @@ For each provisioned patient, Home Assistant creates a `GluMizan A########` devi
 
 - A glucose sensor (`glumizan_A########_glucose`) in `mg/dL`, with trend, measured time, freshness, and episode attributes.
 - A diagnostic freshness sensor (`glumizan_A########_freshness`).
-- An **I am with the patient** button (`glumizan_A########_acknowledge`) when there is an active episode.
+- An alert acknowledgement button when there is an active episode.
+- **I am with the patient** and **I left the patient** buttons for each GluMizan-authorized caregiver association. Presence is distinct from alert acknowledgement and never resolves a medical alert.
 
 Home Assistant assigns final entity IDs. Trend and episode state are attributes of the glucose sensor; no separate caregiver-information entity is created.
 

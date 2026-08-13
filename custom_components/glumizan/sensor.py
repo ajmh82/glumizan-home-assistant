@@ -42,7 +42,7 @@ class GluMizanGlucoseSensor(GluMizanPatientEntity, SensorEntity):
     @property
     def extra_state_attributes(self):
         value = self.coordinator.data[self.alias]
-        return {"trend": value.get("trend"), "measured_at": value.get("measuredAt"), "freshness": value.get("freshness"), "episode": value.get("episode")}
+        return {"trend": value.get("trend"), "measured_at": value.get("measuredAt"), "freshness": value.get("freshness"), "episode": value.get("episode"), "caregivers": value.get("caregivers", [])}
 
 
 class GluMizanStatusSensor(GluMizanPatientEntity, SensorEntity):

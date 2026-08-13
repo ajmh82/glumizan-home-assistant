@@ -3,7 +3,7 @@ from __future__ import annotations
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
-from .const import CONF_BASE_URL, CONF_CALLBACK_SECRET, CONF_CAREGIVER_USER_ID, DOMAIN
+from .const import CONF_BASE_URL, CONF_CALLBACK_SECRET, DOMAIN
 
 
 class GluMizanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -24,7 +24,6 @@ class GluMizanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema({
                 vol.Required(CONF_BASE_URL): str,
                 vol.Required(CONF_CALLBACK_SECRET): str,
-                vol.Required(CONF_CAREGIVER_USER_ID): str,
             }),
             errors=errors,
         )
@@ -46,5 +45,4 @@ class GluMizanOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(step_id="init", data_schema=vol.Schema({
             vol.Required(CONF_BASE_URL, default=data[CONF_BASE_URL]): str,
             vol.Required(CONF_CALLBACK_SECRET, default=data[CONF_CALLBACK_SECRET]): str,
-            vol.Required(CONF_CAREGIVER_USER_ID, default=data[CONF_CAREGIVER_USER_ID]): str,
         }))
