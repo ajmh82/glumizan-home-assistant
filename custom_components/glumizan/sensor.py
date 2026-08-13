@@ -5,7 +5,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from .const import DOMAIN, SIGNAL_PATIENTS_CHANGED
+from .const import DOMAIN, signal_patients_changed
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -17,7 +17,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         if pending:
             async_add_entities([entity for alias in pending for entity in (GluMizanGlucoseSensor(coordinator, alias), GluMizanStatusSensor(coordinator, alias))])
     add(coordinator.data)
-    entry.async_on_unload(async_dispatcher_connect(hass, SIGNAL_PATIENTS_CHANGED, add))
+    entry.async_on_unload(async_dispatcher_connect(hass, signal_patients_changed(entry.entry_id), add))
 
 
 class GluMizanPatientEntity(CoordinatorEntity):

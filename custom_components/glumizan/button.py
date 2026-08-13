@@ -1,7 +1,7 @@
 from homeassistant.components.button import ButtonEntity
 from .const import DOMAIN
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from .const import SIGNAL_PATIENTS_CHANGED
+from .const import signal_patients_changed
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -13,7 +13,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         if pending:
             async_add_entities([entity for alias, caregiver in pending for entity in (GluMizanAcknowledgeButton(coordinator, alias, caregiver["grant_id"]), GluMizanPresenceButton(coordinator, alias, caregiver["grant_id"], "start"), GluMizanPresenceButton(coordinator, alias, caregiver["grant_id"], "end"))])
     add(coordinator.data)
-    entry.async_on_unload(async_dispatcher_connect(hass, SIGNAL_PATIENTS_CHANGED, add))
+    entry.async_on_unload(async_dispatcher_connect(hass, signal_patients_changed(entry.entry_id), add))
 
 
 class GluMizanAcknowledgeButton(ButtonEntity):

@@ -6,7 +6,7 @@ import uuid
 import aiohttp
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from .const import CONF_BASE_URL, CONF_CALLBACK_SECRET, DOMAIN, SIGNAL_PATIENTS_CHANGED
+from .const import CONF_BASE_URL, CONF_CALLBACK_SECRET, DOMAIN, signal_patients_changed
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,9 +47,9 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             await self.async_refresh_presence_context(alias)
         self.async_set_updated_data(self.patient_data)
         if new_aliases:
-            async_dispatcher_send(self.hass, SIGNAL_PATIENTS_CHANGED, new_aliases)
+            async_dispatcher_send(self.hass, signal_patients_changed(self.entry.entry_id), new_aliases)
         else:
-            async_dispatcher_send(self.hass, SIGNAL_PATIENTS_CHANGED, list(self.patient_data))
+            async_dispatcher_send(self.hass, signal_patients_changed(self.entry.entry_id), list(self.patient_data))
         if event_ids:
             headers = self._headers()
             async with self._session.post(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/events/ack", headers=headers, json={"eventIds": event_ids}) as response:
