@@ -68,7 +68,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 _LOGGER.warning("GluMizan event acknowledgement failed", exc_info=True)
 
     def _headers(self):
-        return {"X-Home-Assistant-Signature": self.entry.data[CONF_CALLBACK_SECRET], "X-GluMizan-Installation-Id": self.entry.entry_id}
+        return {"X-Home-Assistant-Signature": self.entry.data[CONF_CALLBACK_SECRET]}
 
     async def async_refresh_presence_context(self, alias):
         async with self._session.get(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/patients/{alias}/presence", headers=self._headers()) as response:
