@@ -7,16 +7,20 @@ from .const import signal_patients_changed
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
     known = set()
-    def add(aliases):
+    def add(aliases, defer=False):
         if isinstance(aliases, dict):
             aliases = list(aliases.keys())
         pending = [(alias, caregiver) for alias in aliases for caregiver in coordinator.data.get(alias, {}).get("caregivers", []) if (alias, caregiver["grant_id"]) not in known]
         known.update((alias, caregiver["grant_id"]) for alias, caregiver in pending)
         if pending:
-            async_add_entities([entity for alias, caregiver in pending for entity in (GluMizanAcknowledgeButton(coordinator, alias, caregiver["grant_id"]), GluMizanPresenceButton(coordinator, alias, caregiver["grant_id"], "start"), GluMizanPresenceButton(coordinator, alias, caregiver["grant_id"], "end"))])
+            entities = [entity for alias, caregiver in pending for entity in (GluMizanAcknowledgeButton(coordinator, alias, caregiver["grant_id"]), GluMizanPresenceButton(coordinator, alias, caregiver["grant_id"], "start"), GluMizanPresenceButton(coordinator, alias, caregiver["grant_id"], "end"))]
+            if defer:
+                hass.async_add_job(async_add_entities, entities)
+            else:
+                async_add_entities(entities)
     patient_aliases = list(getattr(coordinator, "patient_data", coordinator.data).keys())
     add(patient_aliases)
-    entry.async_on_unload(async_dispatcher_connect(hass, signal_patients_changed(entry.entry_id), add))
+    entry.async_on_unload(async_dispatcher_connect(hass, signal_patients_changed(entry.entry_id), lambda aliases: add(aliases, defer=True)))
     add(patient_aliases)
 
 
