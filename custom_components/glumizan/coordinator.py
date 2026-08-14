@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import timedelta
 import aiohttp
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.dispatcher import async_dispatcher_send
@@ -16,7 +17,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         self.entry = entry
         self._session = aiohttp.ClientSession()
         self.patient_data = {}
-        super().__init__(hass, _LOGGER, name=DOMAIN)
+        super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=timedelta(seconds=30))
 
     async def async_close(self):
         await self._session.close()
@@ -24,6 +25,9 @@ class GluMizanCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self):
         try:
             async with asyncio.timeout(25):
+                async with self._session.get(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/events?limit=1", headers=self._headers()) as response:
+                    if response.status < 300:
+                        await self.async_receive_events((await response.json()).get("events", []))
                 return self.patient_data
         except TimeoutError as error:
             raise UpdateFailed("GluMizan bridge unavailable") from error
@@ -43,7 +47,8 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             if event["type"].startswith("episode."):
                 current["episode"] = event["type"]
                 current["episode_id"] = payload.get("episodeId") or payload.get("activeEpisodeId")
-            event_ids.append(event["id"])
+            if isinstance(event["id"], str) and len(event["id"]) == 36:
+                event_ids.append(event["id"])
             await self.async_refresh_presence_context(alias)
         self.async_set_updated_data(self.patient_data)
         if new_aliases:
@@ -52,9 +57,12 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             async_dispatcher_send(self.hass, signal_patients_changed(self.entry.entry_id), list(self.patient_data))
         if event_ids:
             headers = self._headers()
-            async with self._session.post(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/events/ack", headers=headers, json={"eventIds": event_ids}) as response:
-                if response.status >= 300:
-                    raise UpdateFailed("GluMizan event acknowledgement failed")
+            try:
+                async with self._session.post(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/events/ack", headers=headers, json={"eventIds": event_ids}) as response:
+                    if response.status >= 300:
+                        _LOGGER.warning("GluMizan event acknowledgement failed with status %s", response.status)
+            except Exception:
+                _LOGGER.warning("GluMizan event acknowledgement failed", exc_info=True)
 
     def _headers(self):
         return {"X-Home-Assistant-Signature": self.entry.data[CONF_CALLBACK_SECRET], "X-GluMizan-Installation-Id": self.entry.entry_id}
@@ -74,6 +82,12 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 raise UpdateFailed("GluMizan command rejected")
         await self.async_refresh_presence_context(alias)
         self.async_set_updated_data(self.patient_data)
+
+    async def async_request_reconcile(self):
+        headers = self._headers()
+        async with self._session.post(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/reconcile", headers=headers) as response:
+            if response.status >= 300:
+                _LOGGER.warning("GluMizan reconcile request failed with status %s", response.status)
 
     async def async_acknowledge(self, alias, grant_id, episode_id):
         if not episode_id:
