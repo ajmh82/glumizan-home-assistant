@@ -50,4 +50,4 @@ After a HACS update, restart Home Assistant. Configuration entries are retained 
 
 ## Realtime behavior
 
-GluMizan pushes authenticated batches to the Home Assistant event endpoint at `/api/glumizan/events`; this component does not poll glucose data. New provisioned patients are added automatically when their first event arrives.
+GluMizan pushes authenticated batches to the Home Assistant event endpoint at `/api/glumizan/events`. On configuration-entry startup or reload, the component also retrieves an authenticated current snapshot and requests an idempotent reconciliation, so existing entities recover without waiting for a future glucose reading. New provisioned patients are added automatically when their first event arrives.

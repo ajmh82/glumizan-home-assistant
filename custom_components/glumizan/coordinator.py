@@ -22,13 +22,16 @@ class GluMizanCoordinator(DataUpdateCoordinator):
     async def async_close(self):
         await self._session.close()
 
+    def _snapshot(self):
+        return {alias: dict(value) for alias, value in self.patient_data.items()}
+
     async def _async_update_data(self):
         try:
             async with asyncio.timeout(25):
                 async with self._session.get(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/events?limit=1", headers=self._headers()) as response:
                     if response.status < 300:
                         await self.async_receive_events((await response.json()).get("events", []))
-                return self.patient_data
+                return self._snapshot()
         except TimeoutError as error:
             raise UpdateFailed("GluMizan bridge unavailable") from error
 
@@ -50,7 +53,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             if isinstance(event["id"], str) and len(event["id"]) == 36:
                 event_ids.append(event["id"])
             await self.async_refresh_presence_context(alias)
-        self.async_set_updated_data(self.patient_data)
+        self.async_set_updated_data(self._snapshot())
         if new_aliases:
             async_dispatcher_send(self.hass, signal_patients_changed(self.entry.entry_id), new_aliases)
         else:
@@ -81,7 +84,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             if response.status >= 300:
                 raise UpdateFailed("GluMizan command rejected")
         await self.async_refresh_presence_context(alias)
-        self.async_set_updated_data(self.patient_data)
+        self.async_set_updated_data(self._snapshot())
 
     async def async_request_reconcile(self):
         headers = self._headers()
