@@ -88,7 +88,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
 
     async def async_request_reconcile(self):
         headers = self._headers()
-        async with self._session.post(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/reconcile", headers=headers) as response:
+        async with self._session.post(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/reconcile", headers=headers, json={}) as response:
             if response.status >= 300:
                 _LOGGER.warning("GluMizan reconcile request failed with status %s", response.status)
 
