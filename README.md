@@ -8,7 +8,7 @@ GluMizan brings authorized patient glucose information, freshness status, active
 - A GluMizan deployment that has enabled the Home Assistant bridge and can reach the Home Assistant instance over HTTPS.
 - An installation-specific callback secret generated in GluMizan. It is never the GluMizan-to-Home-Assistant bearer token.
 
-`HOME_ASSISTANT_INTEGRATION_TOKEN` is a Home Assistant bearer token kept only in the GluMizan runtime. Do not enter it into Home Assistant, this integration, YAML, Git, screenshots, or support requests.
+A Home Assistant bearer token is kept only in the GluMizan runtime. Do not enter it into Home Assistant, this integration, YAML, Git, screenshots, or support requests.
 
 ## Install with HACS
 
@@ -37,7 +37,7 @@ The integration creates its stable installation identity automatically. GluMizan
 
 For each provisioned patient, Home Assistant creates a `GluMizan A########` device. The component creates:
 
-- A **Glucose** sensor (`glumizan_A########_glucose`) in `mg/dL`, with real trend, trend label/icon, measured time, 12-hour `last_reading_time`, freshness, and episode attributes.
+- A **Glucose** sensor (`glumizan_A########_glucose`) in `mg/dL`, with real trend, trend label/icon, measured time, 12-hour `last_reading_time`, freshness, and episode attributes. It also exposes standard card-compatible `measurement_timestamp` and Nightscout-style `direction` aliases derived solely from the same CGM `measured_at` and trend; `update_source` is diagnostic metadata.
 - A **Data Freshness** diagnostic sensor (`glumizan_A########_freshness`).
 - An alert acknowledgement button when there is an active episode.
 - **I am with the patient** and **I left the patient** buttons for each GluMizan-authorized caregiver association. Presence is distinct from alert acknowledgement and never resolves a medical alert.

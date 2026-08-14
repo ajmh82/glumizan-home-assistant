@@ -6,7 +6,7 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from .const import DOMAIN, signal_patients_changed
-from .presentation import last_reading_time, trend_presentation
+from .presentation import last_reading_time, nightscout_direction, trend_presentation
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -52,7 +52,8 @@ class GluMizanGlucoseSensor(GluMizanPatientEntity, SensorEntity):
     def extra_state_attributes(self):
         value = self.coordinator.data[self.alias]
         trend_label, trend_icon = trend_presentation(value.get("trend"))
-        return {"trend": value.get("trend"), "trend_label": trend_label, "trend_icon": trend_icon, "measured_at": value.get("measuredAt"), "last_reading_time": last_reading_time(value.get("measuredAt")), "freshness": value.get("freshness"), "episode": value.get("episode"), "caregivers": value.get("caregivers", [])}
+        measured_at = value.get("measuredAt")
+        return {"trend": value.get("trend"), "direction": nightscout_direction(value.get("trend")), "trend_label": trend_label, "trend_icon": trend_icon, "measured_at": measured_at, "measurement_timestamp": measured_at, "last_reading_time": last_reading_time(measured_at), "freshness": value.get("freshness"), "update_source": value.get("updateSource"), "episode": value.get("episode"), "caregivers": value.get("caregivers", [])}
     @property
     def icon(self):
         return trend_presentation(self.coordinator.data[self.alias].get("trend"))[1]
