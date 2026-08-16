@@ -40,6 +40,12 @@ class GluMizanPresenceButton(ButtonEntity):
     @property
     def available(self):
         caregiver = next((item for item in self.coordinator.data.get(self.alias, {}).get("caregivers", []) if item["grant_id"] == self.grant_id), None)
-        return caregiver is not None and bool(caregiver.get("active_presence_session_id")) == (self.action == "end")
+        episode_id = (caregiver or {}).get("active_episode_id") or self.coordinator.data.get(self.alias, {}).get("episode_id")
+        claimed = bool((caregiver or {}).get("active_presence_session_id")) or (caregiver or {}).get("care_state") == "WITH_PATIENT"
+        if self.action == "end":
+            return caregiver is not None and claimed
+        return caregiver is not None and bool(episode_id) and not claimed
     async def async_press(self):
-        await self.coordinator.async_command(self.alias, self.grant_id, "caregiver.presence.end" if self.action == "end" else "caregiver.presence.start")
+        caregiver = next((item for item in self.coordinator.data.get(self.alias, {}).get("caregivers", []) if item["grant_id"] == self.grant_id), None)
+        episode_id = (caregiver or {}).get("active_episode_id") or self.coordinator.data.get(self.alias, {}).get("episode_id")
+        await self.coordinator.async_command(self.alias, self.grant_id, "caregiver.presence.end" if self.action == "end" else "caregiver.presence.start", episode_id)

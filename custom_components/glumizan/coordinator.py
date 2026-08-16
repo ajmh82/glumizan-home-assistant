@@ -70,11 +70,6 @@ class GluMizanCoordinator(DataUpdateCoordinator):
     def _headers(self):
         return {"X-Home-Assistant-Signature": self.entry.data[CONF_CALLBACK_SECRET]}
 
-    async def async_refresh_presence_context(self, alias):
-        async with self._session.get(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/patients/{alias}/presence", headers=self._headers()) as response:
-            if response.status < 300:
-                self.patient_data[alias]["caregivers"] = (await response.json()).get("caregivers", [])
-
     async def async_command(self, alias, grant_id, action, episode_id=None):
         headers = {"Idempotency-Key": str(uuid.uuid4()), **self._headers()}
         body = {"action": action, "patientAlias": alias, "grantId": grant_id, "metadata": {"action": "caregiver_response"}}
@@ -85,6 +80,16 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 raise UpdateFailed("GluMizan command rejected")
         await self.async_refresh_presence_context(alias)
         self.async_set_updated_data(self._snapshot())
+
+    async def async_refresh_presence_context(self, alias):
+        async with self._session.get(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/patients/{alias}/presence", headers=self._headers()) as response:
+            if response.status < 300:
+                payload = await response.json()
+                caregivers = payload.get("caregivers", [])
+                self.patient_data[alias]["caregivers"] = caregivers
+                episode_ids = [item.get("active_episode_id") for item in caregivers if item.get("active_episode_id")]
+                if episode_ids:
+                    self.patient_data[alias]["episode_id"] = episode_ids[0]
 
     async def async_request_reconcile(self):
         headers = self._headers()

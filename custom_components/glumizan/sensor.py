@@ -53,7 +53,7 @@ class GluMizanGlucoseSensor(GluMizanPatientEntity, SensorEntity):
         value = self.coordinator.data[self.alias]
         trend_label, trend_icon = trend_presentation(value.get("trend"))
         measured_at = value.get("measuredAt")
-        return {"trend": value.get("trend"), "direction": nightscout_direction(value.get("trend")), "trend_label": trend_label, "trend_icon": trend_icon, "measured_at": measured_at, "measurement_timestamp": measured_at, "last_reading_time": last_reading_time(measured_at), "freshness": value.get("freshness"), "update_source": value.get("updateSource"), "episode": value.get("episode"), "caregivers": value.get("caregivers", [])}
+        return {"trend": value.get("trend"), "direction": nightscout_direction(value.get("trend")), "trend_label": trend_label, "trend_icon": trend_icon, "measured_at": measured_at, "measurement_timestamp": measured_at, "last_reading_time": last_reading_time(measured_at), "freshness": value.get("freshness"), "update_source": value.get("updateSource"), "episode": value.get("episode"), "care_response": value.get("careResponse"), "caregivers": [{"grant_id": caregiver.get("grant_id"), "display_label": caregiver.get("display_label"), "care_state": caregiver.get("care_state"), "notification_target": caregiver.get("notification_target")} for caregiver in value.get("caregivers", [])]}
     @property
     def icon(self):
         return trend_presentation(self.coordinator.data[self.alias].get("trend"))[1]
