@@ -1,1 +1,49 @@
-{"config":{"step":{"user":{"title":"Connect GluMizan","data":{"base_url":"GluMizan API URL","callback_secret":"GluMizan callback trust secret"}}},"error":{"https_required":"Use an HTTPS GluMizan URL"}}}
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect GluMizan",
+        "data": {
+          "base_url": "GluMizan API URL",
+          "callback_secret": "GluMizan pairing secret"
+        }
+      },
+      "reconfigure": {
+        "title": "Re-pair GluMizan",
+        "description": "Paste the pairing secret from GluMizan Account → Home Assistant. Existing devices and entities are kept. Do not add a second GluMizan integration.",
+        "data": {
+          "base_url": "GluMizan API URL",
+          "callback_secret": "New GluMizan pairing secret"
+        }
+      }
+    },
+    "error": {
+      "https_required": "Use an HTTPS GluMizan URL",
+      "invalid_secret": "GluMizan rejected this pairing secret",
+      "cannot_connect": "Could not reach GluMizan",
+      "integration_disabled": "GluMizan Home Assistant integration is currently disabled"
+    },
+    "abort": {
+      "already_configured": "GluMizan is already configured",
+      "reconfigure_successful": "GluMizan pairing was updated"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Re-pair GluMizan",
+        "description": "Paste the pairing secret from GluMizan Account → Home Assistant. Existing devices and entities are kept. Do not add a second GluMizan integration.",
+        "data": {
+          "base_url": "GluMizan API URL",
+          "callback_secret": "New GluMizan pairing secret"
+        }
+      }
+    },
+    "error": {
+      "https_required": "Use an HTTPS GluMizan URL",
+      "invalid_secret": "GluMizan rejected this pairing secret",
+      "cannot_connect": "Could not reach GluMizan",
+      "integration_disabled": "GluMizan Home Assistant integration is currently disabled"
+    }
+  }
+}

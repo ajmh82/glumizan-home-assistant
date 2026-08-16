@@ -7,11 +7,13 @@ from homeassistant.components.http import HomeAssistantView
 from aiohttp import web
 from .const import DOMAIN, PLATFORMS
 from .coordinator import GluMizanCoordinator
+from .pairing import migrate_options_into_data
 
 VIEW_REGISTERED_KEY = "_glumizan_event_view_registered"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    migrate_options_into_data(hass, entry)
     coordinator = GluMizanCoordinator(hass, entry)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     if not hass.data.get(VIEW_REGISTERED_KEY):

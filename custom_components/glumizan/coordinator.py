@@ -28,7 +28,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self):
         try:
             async with asyncio.timeout(25):
-                async with self._session.get(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/events?limit=1", headers=self._headers()) as response:
+                async with self._session.get(f"{self._base_url()}/v1/integrations/home-assistant/events?limit=1", headers=self._headers()) as response:
                     if response.status < 300:
                         await self.async_receive_events((await response.json()).get("events", []))
                 return self._snapshot()
@@ -61,7 +61,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         if event_ids:
             headers = self._headers()
             try:
-                async with self._session.post(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/events/ack", headers=headers, json={"eventIds": event_ids}) as response:
+                async with self._session.post(f"{self._base_url()}/v1/integrations/home-assistant/events/ack", headers=headers, json={"eventIds": event_ids}) as response:
                     if response.status >= 300:
                         _LOGGER.warning("GluMizan event acknowledgement failed with status %s", response.status)
             except Exception:
@@ -70,19 +70,22 @@ class GluMizanCoordinator(DataUpdateCoordinator):
     def _headers(self):
         return {"X-Home-Assistant-Signature": self.entry.data[CONF_CALLBACK_SECRET]}
 
+    def _base_url(self):
+        return self.entry.data[CONF_BASE_URL]
+
     async def async_command(self, alias, grant_id, action, episode_id=None):
         headers = {"Idempotency-Key": str(uuid.uuid4()), **self._headers()}
         body = {"action": action, "patientAlias": alias, "grantId": grant_id, "metadata": {"action": "caregiver_response"}}
         if episode_id:
             body["episodeId"] = episode_id
-        async with self._session.post(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/commands", headers=headers, json=body) as response:
+        async with self._session.post(f"{self._base_url()}/v1/integrations/home-assistant/commands", headers=headers, json=body) as response:
             if response.status >= 300:
                 raise UpdateFailed("GluMizan command rejected")
         await self.async_refresh_presence_context(alias)
         self.async_set_updated_data(self._snapshot())
 
     async def async_refresh_presence_context(self, alias):
-        async with self._session.get(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/patients/{alias}/presence", headers=self._headers()) as response:
+        async with self._session.get(f"{self._base_url()}/v1/integrations/home-assistant/patients/{alias}/presence", headers=self._headers()) as response:
             if response.status < 300:
                 payload = await response.json()
                 caregivers = payload.get("caregivers", [])
@@ -93,7 +96,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
 
     async def async_request_reconcile(self):
         headers = self._headers()
-        async with self._session.post(f"{self.entry.data[CONF_BASE_URL]}/v1/integrations/home-assistant/reconcile", headers=headers, json={}) as response:
+        async with self._session.post(f"{self._base_url()}/v1/integrations/home-assistant/reconcile", headers=headers, json={}) as response:
             if response.status >= 300:
                 _LOGGER.warning("GluMizan reconcile request failed with status %s", response.status)
 
