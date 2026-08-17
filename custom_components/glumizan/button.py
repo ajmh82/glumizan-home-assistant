@@ -36,6 +36,9 @@ class GluMizanCaregiverButton(ButtonEntity):
     def caregiver(self):
         return next((item for item in self.coordinator.data.get(self.alias, {}).get("caregivers", []) if item["grant_id"] == self.grant_id), None)
 
+    def _active_episode_id(self):
+        return (self.caregiver or {}).get("active_episode_id") or self.coordinator.data.get(self.alias, {}).get("episode_id")
+
 
 class GluMizanAcknowledgeButton(GluMizanCaregiverButton):
     def __init__(self, coordinator, alias, grant_id):
@@ -45,10 +48,12 @@ class GluMizanAcknowledgeButton(GluMizanCaregiverButton):
 
     @property
     def available(self):
-        return self.caregiver is not None and bool(self.coordinator.data.get(self.alias, {}).get("episode_id") or (self.caregiver or {}).get("active_episode_id"))
+        return self.caregiver is not None and bool(self._active_episode_id())
 
     async def async_press(self):
-        episode_id = (self.caregiver or {}).get("active_episode_id") or self.coordinator.data.get(self.alias, {}).get("episode_id")
+        episode_id = self._active_episode_id()
+        if not episode_id:
+            return
         await self.coordinator.async_acknowledge(self.alias, self.grant_id, episode_id)
 
 
@@ -64,12 +69,20 @@ class GluMizanPresenceButton(GluMizanCaregiverButton):
         caregiver = self.caregiver
         if caregiver is None:
             return False
+        if not self._active_episode_id():
+            return False
         claimed = bool(caregiver.get("active_presence_session_id")) or caregiver.get("care_state") == "WITH_PATIENT"
         if self.action == "end":
             return claimed
-        return not claimed
+        all_caregivers = self.coordinator.data.get(self.alias, {}).get("caregivers", [])
+        any_claimed = any(
+            bool(c.get("active_presence_session_id")) or c.get("care_state") == "WITH_PATIENT"
+            for c in all_caregivers
+        )
+        return not any_claimed
 
     async def async_press(self):
-        caregiver = self.caregiver
-        episode_id = (caregiver or {}).get("active_episode_id") or self.coordinator.data.get(self.alias, {}).get("episode_id")
+        episode_id = self._active_episode_id()
+        if not episode_id:
+            return
         await self.coordinator.async_command(self.alias, self.grant_id, "caregiver.presence.end" if self.action == "end" else "caregiver.presence.start", episode_id)

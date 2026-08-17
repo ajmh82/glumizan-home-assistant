@@ -116,11 +116,15 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 payload = await response.json()
                 caregivers = normalize_caregivers(payload.get("caregivers", []))
                 current = self.patient_data.setdefault(alias, {"alias": alias, "glucose": None, "trend": None, "freshness": "UNKNOWN", "episode": None, "caregivers": []})
+                caregivers_updated = False
                 if caregivers or not current.get("caregivers"):
                     current["caregivers"] = caregivers
+                    caregivers_updated = True
                 episode_ids = [item.get("active_episode_id") for item in caregivers if item.get("active_episode_id")]
                 if episode_ids:
                     current["episode_id"] = episode_ids[0]
+                elif caregivers_updated and current.get("caregivers"):
+                    current["episode_id"] = None
 
     async def async_request_reconcile(self):
         headers = self._headers()
