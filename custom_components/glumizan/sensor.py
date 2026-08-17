@@ -12,20 +12,24 @@ from .presentation import last_reading_time, nightscout_direction, trend_present
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
     known = set()
-    def add(aliases, defer=False):
+    caregiver_known = set()
+    def patient_row(alias):
+        data = coordinator.data if isinstance(coordinator.data, dict) else {}
+        return data.get(alias) or getattr(coordinator, "patient_data", {}).get(alias) or {}
+    def add(aliases):
         if isinstance(aliases, dict):
             aliases = list(aliases.keys())
         pending = [alias for alias in aliases if alias not in known]
         known.update(pending)
-        if pending:
-            entities = [entity for alias in pending for entity in (GluMizanGlucoseSensor(coordinator, alias), GluMizanStatusSensor(coordinator, alias))]
-            if defer:
-                hass.async_add_job(async_add_entities, entities)
-            else:
-                async_add_entities(entities)
+        caregiver_pending = [(alias, caregiver) for alias in aliases for caregiver in patient_row(alias).get("caregivers", []) if (alias, caregiver.get("grant_id")) not in caregiver_known]
+        caregiver_known.update((alias, caregiver.get("grant_id")) for alias, caregiver in caregiver_pending)
+        entities = [entity for alias in pending for entity in (GluMizanGlucoseSensor(coordinator, alias), GluMizanStatusSensor(coordinator, alias))]
+        entities.extend(GluMizanCaregiverSensor(coordinator, alias, caregiver) for alias, caregiver in caregiver_pending)
+        if entities:
+            async_add_entities(entities)
     patient_aliases = list(getattr(coordinator, "patient_data", coordinator.data).keys())
     add(patient_aliases)
-    entry.async_on_unload(async_dispatcher_connect(hass, signal_patients_changed(entry.entry_id), lambda aliases: add(aliases, defer=True)))
+    entry.async_on_unload(async_dispatcher_connect(hass, signal_patients_changed(entry.entry_id), add))
     add(patient_aliases)
 
 
@@ -65,3 +69,37 @@ class GluMizanStatusSensor(GluMizanPatientEntity, SensorEntity):
         super().__init__(coordinator, alias); self._attr_unique_id = f"{DOMAIN}_{alias}_freshness"; self._attr_name = "Data Freshness"
     @property
     def native_value(self): return self.coordinator.data[self.alias].get("freshness")
+
+
+class GluMizanCaregiverSensor(GluMizanPatientEntity, SensorEntity):
+    _attr_icon = "mdi:account-heart"
+
+    def __init__(self, coordinator, alias, caregiver):
+        super().__init__(coordinator, alias)
+        grant_id = caregiver["grant_id"]
+        self.grant_id = grant_id
+        self._attr_unique_id = f"{DOMAIN}_{alias}_{grant_id}_caregiver"
+        self._attr_name = caregiver.get("display_label") or "Caregiver"
+
+    @property
+    def caregiver(self):
+        return next((item for item in self.coordinator.data.get(self.alias, {}).get("caregivers", []) if item.get("grant_id") == self.grant_id), None)
+
+    @property
+    def available(self):
+        return super().available and self.caregiver is not None
+
+    @property
+    def native_value(self):
+        caregiver = self.caregiver or {}
+        return caregiver.get("care_state") or "AVAILABLE"
+
+    @property
+    def extra_state_attributes(self):
+        caregiver = self.caregiver or {}
+        return {
+            "grant_id": self.grant_id,
+            "display_label": caregiver.get("display_label"),
+            "care_state": caregiver.get("care_state"),
+            "notification_target": caregiver.get("notification_target"),
+        }

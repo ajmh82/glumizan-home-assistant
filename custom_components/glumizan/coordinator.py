@@ -12,6 +12,28 @@ from .const import CONF_BASE_URL, CONF_CALLBACK_SECRET, DOMAIN, signal_patients_
 _LOGGER = logging.getLogger(__name__)
 
 
+def normalize_caregivers(raw):
+    caregivers = []
+    if not isinstance(raw, list):
+        return caregivers
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        grant_id = item.get("grant_id") or item.get("grantId")
+        if not isinstance(grant_id, str) or not grant_id:
+            continue
+        caregivers.append({
+            "grant_id": grant_id,
+            "display_label": item.get("display_label") or item.get("displayLabel") or "Caregiver",
+            "care_state": item.get("care_state") or item.get("careState") or "AVAILABLE",
+            "active_episode_id": item.get("active_episode_id") or item.get("activeEpisodeId"),
+            "active_presence_session_id": item.get("active_presence_session_id") or item.get("activePresenceSessionId"),
+            "notification_target": item.get("notification_target") or item.get("notificationTarget"),
+            "permissions": item.get("permissions") or [],
+        })
+    return caregivers
+
+
 class GluMizanCoordinator(DataUpdateCoordinator):
     def __init__(self, hass, entry):
         self.entry = entry
@@ -42,11 +64,15 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             alias = event["patientAlias"]
             if alias not in self.patient_data:
                 new_aliases.append(alias)
-            current = self.patient_data.setdefault(alias, {"alias": alias, "glucose": None, "trend": None, "freshness": "UNKNOWN", "episode": None})
+            current = self.patient_data.setdefault(alias, {"alias": alias, "glucose": None, "trend": None, "freshness": "UNKNOWN", "episode": None, "caregivers": []})
             payload = event.get("payload", {})
             glucose = payload.get("glucose")
             if glucose:
                 current.update(glucose)
+            if "caregivers" in payload:
+                incoming = normalize_caregivers(payload.get("caregivers"))
+                if incoming or not current.get("caregivers"):
+                    current["caregivers"] = incoming
             if event["type"].startswith("episode."):
                 current["episode"] = event["type"]
                 current["episode_id"] = payload.get("episodeId") or payload.get("activeEpisodeId")
@@ -88,17 +114,24 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         async with self._session.get(f"{self._base_url()}/v1/integrations/home-assistant/patients/{alias}/presence", headers=self._headers()) as response:
             if response.status < 300:
                 payload = await response.json()
-                caregivers = payload.get("caregivers", [])
-                self.patient_data[alias]["caregivers"] = caregivers
+                caregivers = normalize_caregivers(payload.get("caregivers", []))
+                current = self.patient_data.setdefault(alias, {"alias": alias, "glucose": None, "trend": None, "freshness": "UNKNOWN", "episode": None, "caregivers": []})
+                if caregivers or not current.get("caregivers"):
+                    current["caregivers"] = caregivers
                 episode_ids = [item.get("active_episode_id") for item in caregivers if item.get("active_episode_id")]
                 if episode_ids:
-                    self.patient_data[alias]["episode_id"] = episode_ids[0]
+                    current["episode_id"] = episode_ids[0]
 
     async def async_request_reconcile(self):
         headers = self._headers()
         async with self._session.post(f"{self._base_url()}/v1/integrations/home-assistant/reconcile", headers=headers, json={}) as response:
             if response.status >= 300:
                 _LOGGER.warning("GluMizan reconcile request failed with status %s", response.status)
+        for alias in list(self.patient_data):
+            await self.async_refresh_presence_context(alias)
+        if self.patient_data:
+            self.async_set_updated_data(self._snapshot())
+            async_dispatcher_send(self.hass, signal_patients_changed(self.entry.entry_id), list(self.patient_data))
 
     async def async_acknowledge(self, alias, grant_id, episode_id):
         if not episode_id:
