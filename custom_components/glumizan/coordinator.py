@@ -250,6 +250,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                     current["episode_id"] = episode_ids[0]
                 elif caregivers_updated and current.get("caregivers"):
                     current["episode_id"] = None
+                    current["active_alerts"] = []
 
     async def async_request_reconcile(self):
         headers = self._headers()
