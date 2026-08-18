@@ -7,9 +7,31 @@ from datetime import timedelta
 import aiohttp
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+try:
+    from homeassistant.helpers.storage import Store
+except ModuleNotFoundError:  # lightweight contract-test stubs omit HA storage
+    class Store:
+        def __init__(self, hass, _version, key):
+            self._data = hass.data.setdefault("_glumizan_test_storage", {})
+            self._key = key
+
+        async def async_load(self):
+            return self._data.get(self._key)
+
+        async def async_save(self, value):
+            self._data[self._key] = value
 from .const import CONF_BASE_URL, CONF_CALLBACK_SECRET, DOMAIN, signal_patients_changed
 
 _LOGGER = logging.getLogger(__name__)
+_DELIVERY_DEDUP_VERSION = 1
+_DELIVERY_DEDUP_LIMIT = 512
+
+
+def re_full_uuid(value):
+    try:
+        return str(uuid.UUID(value)) == value.lower()
+    except (AttributeError, ValueError):
+        return False
 
 
 def normalize_caregivers(raw):
@@ -39,6 +61,9 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         self.entry = entry
         self._session = aiohttp.ClientSession()
         self.patient_data = {}
+        self._delivery_store = Store(hass, _DELIVERY_DEDUP_VERSION, f"{DOMAIN}.{entry.entry_id}.deliveries")
+        self._processed_delivery_ids = set()
+        self._delivery_dedup_loaded = False
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=timedelta(seconds=30))
 
     async def async_close(self):
@@ -52,7 +77,9 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             async with asyncio.timeout(25):
                 async with self._session.get(f"{self._base_url()}/v1/integrations/home-assistant/events?limit=100", headers=self._headers()) as response:
                     if response.status < 300:
-                        await self.async_receive_events((await response.json()).get("events", []))
+                        body = await response.json()
+                        await self.async_receive_events(body.get("events", []))
+                        await self.async_receive_delivery_events(body.get("deliveries", []))
                 return self._snapshot()
         except TimeoutError as error:
             raise UpdateFailed("GluMizan bridge unavailable") from error
@@ -77,9 +104,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 current["episode"] = event["type"]
                 current["episode_id"] = payload.get("episodeId") or payload.get("activeEpisodeId")
             if "activeAlerts" in payload:
-                previous_alerts = current.get("active_alerts", [])
                 current["active_alerts"] = payload["activeAlerts"] or []
-                self._fire_alert_events(alias, previous_alerts, current["active_alerts"])
             if isinstance(event["id"], str) and len(event["id"]) == 36:
                 event_ids.append(event["id"])
             await self.async_refresh_presence_context(alias)
@@ -96,6 +121,74 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                         _LOGGER.warning("GluMizan event acknowledgement failed with status %s", response.status)
             except Exception:
                 _LOGGER.warning("GluMizan event acknowledgement failed", exc_info=True)
+
+    async def _async_load_delivery_dedup(self):
+        if self._delivery_dedup_loaded:
+            return
+        saved = await self._delivery_store.async_load()
+        if isinstance(saved, list):
+            self._processed_delivery_ids = {item for item in saved if isinstance(item, str)}
+        self._delivery_dedup_loaded = True
+
+    async def _async_record_delivery(self, delivery_id):
+        self._processed_delivery_ids.add(delivery_id)
+        if len(self._processed_delivery_ids) > _DELIVERY_DEDUP_LIMIT:
+            self._processed_delivery_ids = set(sorted(self._processed_delivery_ids)[-_DELIVERY_DEDUP_LIMIT:])
+        await self._delivery_store.async_save(sorted(self._processed_delivery_ids))
+
+    async def async_receive_delivery_events(self, deliveries):
+        await self._async_load_delivery_dedup()
+        acknowledged = []
+        if not isinstance(deliveries, list):
+            return
+        for delivery in deliveries:
+            if not isinstance(delivery, dict):
+                _LOGGER.warning("GluMizan alert delivery was malformed")
+                continue
+            delivery_id = delivery.get("delivery_id")
+            alias = delivery.get("patient_alias")
+            is_test = delivery.get("is_test") is True
+            episode_id = delivery.get("episode_id")
+            test_id = delivery.get("test_id")
+            if not isinstance(delivery_id, str) or not re_full_uuid(delivery_id) or not isinstance(alias, str) or not alias.startswith("A") or (is_test and not isinstance(test_id, str)) or (not is_test and not isinstance(episode_id, str)):
+                _LOGGER.warning("GluMizan alert delivery was malformed")
+                continue
+            if delivery_id in self._processed_delivery_ids:
+                acknowledged.append(delivery_id)
+                continue
+            try:
+                await self._async_record_delivery(delivery_id)
+            except Exception:
+                _LOGGER.warning("GluMizan alert delivery could not be persisted", exc_info=True)
+                continue
+            event_data = {
+                "delivery_id": delivery_id,
+                "patient_alias": alias,
+                "episode_id": episode_id if not is_test else None,
+                "test_id": test_id if is_test else None,
+                "event": delivery.get("event"),
+                "action": delivery.get("action"),
+                "category": delivery.get("category"),
+                "severity": delivery.get("severity"),
+                "recipient_role": delivery.get("recipient_role"),
+                "is_test": is_test,
+                "created_at": delivery.get("created_at"),
+            }
+            if isinstance(delivery.get("glucose"), dict):
+                event_data["glucose"] = delivery["glucose"]
+            self.hass.bus.async_fire(f"{DOMAIN}_alert", event_data)
+            acknowledged.append(delivery_id)
+        if acknowledged:
+            try:
+                async with self._session.post(
+                    f"{self._base_url()}/v1/integrations/home-assistant/events/ack",
+                    headers=self._headers(),
+                    json={"deliveryIds": acknowledged},
+                ) as response:
+                    if response.status >= 300:
+                        _LOGGER.warning("GluMizan alert delivery acknowledgement failed with status %s", response.status)
+            except Exception:
+                _LOGGER.warning("GluMizan alert delivery acknowledgement failed", exc_info=True)
 
     def _headers(self):
         return {"X-Home-Assistant-Signature": self.entry.data[CONF_CALLBACK_SECRET]}
