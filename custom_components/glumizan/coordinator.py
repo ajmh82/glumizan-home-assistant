@@ -171,6 +171,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 "category": delivery.get("category"),
                 "severity": delivery.get("severity"),
                 "recipient_role": delivery.get("recipient_role"),
+                "recipient_ref": delivery.get("recipient_ref"),
                 "is_test": is_test,
                 "created_at": delivery.get("created_at"),
             }
