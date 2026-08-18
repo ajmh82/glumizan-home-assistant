@@ -1,13 +1,13 @@
 {
   "domain": "glumizan",
   "name": "GluMizan",
-  "version": "1.2.0",
-  "documentation": "https://github.com/ajmh82/glumizan-home-assistant",
-  "issue_tracker": "https://github.com/ajmh82/glumizan-home-assistant/issues",
+  "codeowners": ["@ajmh82"],
   "config_flow": true,
   "dependencies": ["http"],
+  "documentation": "https://github.com/ajmh82/glumizan-home-assistant",
   "integration_type": "hub",
   "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/ajmh82/glumizan-home-assistant/issues",
   "requirements": [],
-  "codeowners": ["@ajmh82"]
+  "version": "1.2.0"
 }
