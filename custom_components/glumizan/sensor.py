@@ -23,7 +23,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         known.update(pending)
         caregiver_pending = [(alias, caregiver) for alias in aliases for caregiver in patient_row(alias).get("caregivers", []) if (alias, caregiver.get("grant_id")) not in caregiver_known]
         caregiver_known.update((alias, caregiver.get("grant_id")) for alias, caregiver in caregiver_pending)
-        entities = [entity for alias in pending for entity in (GluMizanGlucoseSensor(coordinator, alias), GluMizanStatusSensor(coordinator, alias))]
+        entities = [entity for alias in pending for entity in (GluMizanGlucoseSensor(coordinator, alias), GluMizanStatusSensor(coordinator, alias), GluMizanActiveAlertSensor(coordinator, alias))]
         entities.extend(GluMizanCaregiverSensor(coordinator, alias, caregiver) for alias, caregiver in caregiver_pending)
         if entities:
             async_add_entities(entities)
@@ -102,4 +102,41 @@ class GluMizanCaregiverSensor(GluMizanPatientEntity, SensorEntity):
             "display_label": caregiver.get("display_label"),
             "care_state": caregiver.get("care_state"),
             "notification_target": caregiver.get("notification_target"),
+        }
+
+
+class GluMizanActiveAlertSensor(GluMizanPatientEntity, SensorEntity):
+    _attr_icon = "mdi:bell-alert"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator, alias):
+        super().__init__(coordinator, alias)
+        self._attr_unique_id = f"{DOMAIN}_{alias}_active_alert"
+        self._attr_name = "Active Alerts"
+
+    @property
+    def native_value(self):
+        data = self.coordinator.data.get(self.alias, {})
+        alerts = data.get("active_alerts") or []
+        return len(alerts)
+
+    @property
+    def extra_state_attributes(self):
+        data = self.coordinator.data.get(self.alias, {})
+        alerts = data.get("active_alerts") or []
+        return {
+            "alert_count": len(alerts),
+            "alerts": [
+                {
+                    "category": a.get("category"),
+                    "episode_id": a.get("id"),
+                    "occurrence_count": a.get("occurrenceCount"),
+                    "first_detected_at": a.get("firstDetectedAt"),
+                    "last_seen_at": a.get("lastSeenAt"),
+                    "last_reading_value": a.get("lastReadingValue"),
+                }
+                for a in alerts if isinstance(a, dict)
+            ],
+            "episode": data.get("episode"),
+            "episode_id": data.get("episode_id"),
         }

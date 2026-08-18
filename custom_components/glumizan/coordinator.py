@@ -64,7 +64,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             alias = event["patientAlias"]
             if alias not in self.patient_data:
                 new_aliases.append(alias)
-            current = self.patient_data.setdefault(alias, {"alias": alias, "glucose": None, "trend": None, "freshness": "UNKNOWN", "episode": None, "caregivers": []})
+            current = self.patient_data.setdefault(alias, {"alias": alias, "glucose": None, "trend": None, "freshness": "UNKNOWN", "episode": None, "active_alerts": [], "caregivers": []})
             payload = event.get("payload", {})
             glucose = payload.get("glucose")
             if glucose:
@@ -76,6 +76,10 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             if event["type"].startswith("episode."):
                 current["episode"] = event["type"]
                 current["episode_id"] = payload.get("episodeId") or payload.get("activeEpisodeId")
+            if "activeAlerts" in payload:
+                previous_alerts = current.get("active_alerts", [])
+                current["active_alerts"] = payload["activeAlerts"] or []
+                self._fire_alert_events(alias, previous_alerts, current["active_alerts"])
             if isinstance(event["id"], str) and len(event["id"]) == 36:
                 event_ids.append(event["id"])
             await self.async_refresh_presence_context(alias)
@@ -96,6 +100,33 @@ class GluMizanCoordinator(DataUpdateCoordinator):
     def _headers(self):
         return {"X-Home-Assistant-Signature": self.entry.data[CONF_CALLBACK_SECRET]}
 
+    def _fire_alert_events(self, alias, previous_alerts, current_alerts):
+        prev_ids = {a.get("id") for a in previous_alerts if isinstance(a, dict)}
+        curr_ids = {a.get("id") for a in current_alerts if isinstance(a, dict)}
+        for alert in current_alerts:
+            if not isinstance(alert, dict):
+                continue
+            aid = alert.get("id")
+            if aid and aid not in prev_ids:
+                self.hass.bus.async_fire(f"{DOMAIN}_alert", {
+                    "patient_alias": alias,
+                    "action": "opened",
+                    "category": alert.get("category"),
+                    "episode_id": aid,
+                    "occurrence_count": alert.get("occurrenceCount"),
+                })
+        for alert in previous_alerts:
+            if not isinstance(alert, dict):
+                continue
+            aid = alert.get("id")
+            if aid and aid not in curr_ids:
+                self.hass.bus.async_fire(f"{DOMAIN}_alert", {
+                    "patient_alias": alias,
+                    "action": "resolved",
+                    "category": alert.get("category"),
+                    "episode_id": aid,
+                })
+
     def _base_url(self):
         return self.entry.data[CONF_BASE_URL]
 
@@ -115,7 +146,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             if response.status < 300:
                 payload = await response.json()
                 caregivers = normalize_caregivers(payload.get("caregivers", []))
-                current = self.patient_data.setdefault(alias, {"alias": alias, "glucose": None, "trend": None, "freshness": "UNKNOWN", "episode": None, "caregivers": []})
+                current = self.patient_data.setdefault(alias, {"alias": alias, "glucose": None, "trend": None, "freshness": "UNKNOWN", "episode": None, "active_alerts": [], "caregivers": []})
                 caregivers_updated = False
                 if caregivers or not current.get("caregivers"):
                     current["caregivers"] = caregivers

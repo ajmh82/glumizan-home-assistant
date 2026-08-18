@@ -1,10 +1,13 @@
 {
   "domain": "glumizan",
   "name": "GluMizan",
-  "version": "1.1.13",
-  "documentation": "https://glumizan.com",
+  "version": "1.2.0",
+  "documentation": "https://github.com/ajmh82/glumizan-home-assistant",
+  "issue_tracker": "https://github.com/ajmh82/glumizan-home-assistant/issues",
   "config_flow": true,
+  "dependencies": ["http"],
+  "integration_type": "hub",
   "iot_class": "cloud_push",
   "requirements": [],
-  "codeowners": []
+  "codeowners": ["@ajmh82"]
 }
