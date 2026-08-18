@@ -25,6 +25,8 @@ from .const import CONF_BASE_URL, CONF_CALLBACK_SECRET, DOMAIN, signal_patients_
 _LOGGER = logging.getLogger(__name__)
 _DELIVERY_DEDUP_VERSION = 1
 _DELIVERY_DEDUP_LIMIT = 512
+_IDLE_UPDATE_INTERVAL = timedelta(seconds=30)
+_ACTIVE_UPDATE_INTERVAL = timedelta(seconds=2)
 
 
 def re_full_uuid(value):
@@ -76,13 +78,25 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         self._delivery_store = Store(hass, _DELIVERY_DEDUP_VERSION, f"{DOMAIN}.{entry.entry_id}.deliveries")
         self._processed_delivery_ids = set()
         self._delivery_dedup_loaded = False
-        super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=timedelta(seconds=30))
+        super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=_IDLE_UPDATE_INTERVAL)
 
     async def async_close(self):
         await self._session.close()
 
     def _snapshot(self):
         return {alias: dict(value) for alias, value in self.patient_data.items()}
+
+    def _update_poll_interval(self):
+        active = any(
+            data.get("active_episode_ids") or data.get("active_alerts") or any(
+                caregiver.get("care_state") == "WITH_PATIENT" or caregiver.get("active_presence_session_id")
+                for caregiver in data.get("caregivers", []) if isinstance(caregiver, dict)
+            )
+            for data in self.patient_data.values()
+        )
+        interval = _ACTIVE_UPDATE_INTERVAL if active else _IDLE_UPDATE_INTERVAL
+        if self.update_interval != interval:
+            self.update_interval = interval
 
     async def _async_update_data(self):
         try:
@@ -123,6 +137,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             if isinstance(event["id"], str) and len(event["id"]) == 36:
                 event_ids.append(event["id"])
             await self.async_refresh_presence_context(alias)
+        self._update_poll_interval()
         self.async_set_updated_data(self._snapshot())
         if new_aliases:
             async_dispatcher_send(self.hass, signal_patients_changed(self.entry.entry_id), new_aliases)
@@ -270,6 +285,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                     set_active_episode_ids(current, episode_ids)
                     if not episode_ids:
                         current["active_alerts"] = []
+                self._update_poll_interval()
 
     async def async_request_reconcile(self):
         headers = self._headers()
