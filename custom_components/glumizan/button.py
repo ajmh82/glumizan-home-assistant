@@ -37,7 +37,12 @@ class GluMizanCaregiverButton(ButtonEntity):
         return next((item for item in self.coordinator.data.get(self.alias, {}).get("caregivers", []) if item["grant_id"] == self.grant_id), None)
 
     def _active_episode_id(self):
-        return (self.caregiver or {}).get("active_episode_id") or self.coordinator.data.get(self.alias, {}).get("episode_id")
+        patient = self.coordinator.data.get(self.alias, {})
+        episode_ids = patient.get("active_episode_ids")
+        if isinstance(episode_ids, list):
+            canonical = list(dict.fromkeys(episode_id for episode_id in episode_ids if isinstance(episode_id, str) and episode_id))
+            return canonical[0] if len(canonical) == 1 else None
+        return (self.caregiver or {}).get("active_episode_id") or patient.get("episode_id")
 
 
 class GluMizanAcknowledgeButton(GluMizanCaregiverButton):

@@ -56,6 +56,18 @@ def normalize_caregivers(raw):
     return caregivers
 
 
+def normalize_episode_ids(raw):
+    if not isinstance(raw, list):
+        return []
+    return list(dict.fromkeys(item for item in raw if isinstance(item, str) and item))
+
+
+def set_active_episode_ids(current, episode_ids):
+    normalized = normalize_episode_ids(episode_ids)
+    current["active_episode_ids"] = normalized
+    current["episode_id"] = normalized[0] if len(normalized) == 1 else None
+
+
 class GluMizanCoordinator(DataUpdateCoordinator):
     def __init__(self, hass, entry):
         self.entry = entry
@@ -102,9 +114,12 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                     current["caregivers"] = incoming
             if event["type"].startswith("episode."):
                 current["episode"] = event["type"]
-                current["episode_id"] = payload.get("episodeId") or payload.get("activeEpisodeId")
+                episode_id = payload.get("episodeId") or payload.get("activeEpisodeId")
+                if isinstance(episode_id, str) and episode_id:
+                    set_active_episode_ids(current, [episode_id])
             if "activeAlerts" in payload:
                 current["active_alerts"] = payload["activeAlerts"] or []
+                set_active_episode_ids(current, [alert.get("id") for alert in current["active_alerts"] if isinstance(alert, dict)])
             if isinstance(event["id"], str) and len(event["id"]) == 36:
                 event_ids.append(event["id"])
             await self.async_refresh_presence_context(alias)
@@ -245,12 +260,16 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 if caregivers or not current.get("caregivers"):
                     current["caregivers"] = caregivers
                     caregivers_updated = True
-                episode_ids = [item.get("active_episode_id") for item in caregivers if item.get("active_episode_id")]
-                if episode_ids:
-                    current["episode_id"] = episode_ids[0]
-                elif caregivers_updated and current.get("caregivers"):
-                    current["episode_id"] = None
-                    current["active_alerts"] = []
+                if "activeEpisodeIds" in payload:
+                    episode_ids = normalize_episode_ids(payload.get("activeEpisodeIds"))
+                    known_alerts = {alert.get("id"): alert for alert in current.get("active_alerts", []) if isinstance(alert, dict) and alert.get("id") in episode_ids}
+                    current["active_alerts"] = [known_alerts.get(episode_id, {"id": episode_id}) for episode_id in episode_ids]
+                    set_active_episode_ids(current, episode_ids)
+                elif caregivers_updated:
+                    episode_ids = [item.get("active_episode_id") for item in caregivers if item.get("active_episode_id")]
+                    set_active_episode_ids(current, episode_ids)
+                    if not episode_ids:
+                        current["active_alerts"] = []
 
     async def async_request_reconcile(self):
         headers = self._headers()

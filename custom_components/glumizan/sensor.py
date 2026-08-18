@@ -126,6 +126,8 @@ class GluMizanActiveAlertSensor(GluMizanPatientEntity, SensorEntity):
         alerts = data.get("active_alerts") or []
         return {
             "alert_count": len(alerts),
+            "active_episode_ids": data.get("active_episode_ids") or [],
+            "control_status": "SINGLE_ACTIVE_EPISODE" if len(data.get("active_episode_ids") or []) == 1 else "MULTIPLE_ACTIVE_EPISODES" if len(data.get("active_episode_ids") or []) > 1 else "NO_ACTIVE_EPISODE",
             "alerts": [
                 {
                     "category": a.get("category"),
