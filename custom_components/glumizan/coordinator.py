@@ -50,7 +50,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self):
         try:
             async with asyncio.timeout(25):
-                async with self._session.get(f"{self._base_url()}/v1/integrations/home-assistant/events?limit=1", headers=self._headers()) as response:
+                async with self._session.get(f"{self._base_url()}/v1/integrations/home-assistant/events?limit=100", headers=self._headers()) as response:
                     if response.status < 300:
                         await self.async_receive_events((await response.json()).get("events", []))
                 return self._snapshot()
