@@ -23,7 +23,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         known.update(pending)
         caregiver_pending = [(alias, caregiver) for alias in aliases for caregiver in patient_row(alias).get("caregivers", []) if (alias, caregiver.get("grant_id")) not in caregiver_known]
         caregiver_known.update((alias, caregiver.get("grant_id")) for alias, caregiver in caregiver_pending)
-        entities = [entity for alias in pending for entity in (GluMizanGlucoseSensor(coordinator, alias), GluMizanStatusSensor(coordinator, alias), GluMizanActiveAlertSensor(coordinator, alias))]
+        entities = [entity for alias in pending for entity in (GluMizanPatientStatusSensor(coordinator, alias), GluMizanGlucoseSensor(coordinator, alias), GluMizanStatusSensor(coordinator, alias), GluMizanActiveAlertSensor(coordinator, alias))]
         entities.extend(GluMizanCaregiverSensor(coordinator, alias, caregiver) for alias, caregiver in caregiver_pending)
         if entities:
             async_add_entities(entities)
@@ -61,6 +61,29 @@ class GluMizanGlucoseSensor(GluMizanPatientEntity, SensorEntity):
     @property
     def icon(self):
         return trend_presentation(self.coordinator.data[self.alias].get("trend"))[1]
+
+
+class GluMizanPatientStatusSensor(GluMizanPatientEntity, SensorEntity):
+    _attr_icon = "mdi:account-heart-outline"
+
+    def __init__(self, coordinator, alias):
+        super().__init__(coordinator, alias); self._attr_unique_id = f"{DOMAIN}_{alias}_patient_status"; self._attr_name = "Patient Care Status"
+
+    @property
+    def native_value(self):
+        data = self.coordinator.data.get(self.alias, {})
+        return "Attention needed" if data.get("active_alerts") else "Monitoring"
+
+    @property
+    def extra_state_attributes(self):
+        data = self.coordinator.data.get(self.alias, {})
+        caregivers = data.get("caregivers") or []
+        return {
+            "role": "Patient",
+            "caregiver_count": len(caregivers),
+            "active_alert_count": len(data.get("active_alerts") or []),
+            "notification_routing": "Recipient-scoped",
+        }
 
 
 class GluMizanStatusSensor(GluMizanPatientEntity, SensorEntity):

@@ -95,7 +95,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             for data in self.patient_data.values()
         )
         interval = _ACTIVE_UPDATE_INTERVAL if active else _IDLE_UPDATE_INTERVAL
-        if self.update_interval != interval:
+        if getattr(self, "update_interval", None) != interval:
             self.update_interval = interval
 
     async def _async_update_data(self):
@@ -202,6 +202,8 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 "severity": delivery.get("severity"),
                 "recipient_role": delivery.get("recipient_role"),
                 "recipient_ref": delivery.get("recipient_ref"),
+                "route_key": delivery.get("route_key"),
+                "notification_target": delivery.get("notification_target"),
                 "is_test": is_test,
                 "created_at": delivery.get("created_at"),
             }
