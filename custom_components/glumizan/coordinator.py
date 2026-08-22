@@ -82,6 +82,8 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         self._fired_alert_transition_keys = set()
         self._sse_task = None
         self._sse_reconnect_delay = SSE_RECONNECT_BASE_SECONDS
+        self._care_event_sequence = 0
+        self._care_event_sequence_by_key = {}
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=_IDLE_UPDATE_INTERVAL)
 
     async def async_close(self):
@@ -288,7 +290,13 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                     self._fired_alert_transition_keys.add(transition_key)
                 self._fired_opened_episode_ids.discard(aid)
 
-    def _fire_care_events(self, alias, previous_caregivers, current_caregivers):
+    def _fire_care_events(
+        self,
+        alias,
+        previous_caregivers,
+        current_caregivers,
+        skip_if_emitted_after=None,
+    ):
         prev_states = {}
         for cg in previous_caregivers:
             if isinstance(cg, dict):
@@ -304,6 +312,13 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             curr_state = cg.get("care_state")
             prev_state = prev_states.get(gid)
             if prev_state is not None and curr_state != prev_state:
+                transition_key = (alias, gid)
+                if (
+                    skip_if_emitted_after is not None
+                    and self._care_event_sequence_by_key.get(transition_key, 0)
+                    > skip_if_emitted_after
+                ):
+                    continue
                 self.hass.bus.async_fire(f"{DOMAIN}_care", {
                     "patient_alias": alias,
                     "grant_id": gid,
@@ -311,6 +326,10 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                     "previous_care_state": prev_state,
                     "display_label": cg.get("display_label"),
                 })
+                self._care_event_sequence += 1
+                self._care_event_sequence_by_key[transition_key] = (
+                    self._care_event_sequence
+                )
 
     def _base_url(self):
         return self.entry.data[CONF_BASE_URL]
@@ -372,6 +391,40 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             raise UpdateFailed("No active GluMizan episode for this patient")
         await self.async_command(alias, grant_id, "caregiver.acknowledge", episode_id)
 
+    async def _async_handle_realtime_invalidation(self):
+        previous_caregivers = {
+            alias: [
+                dict(caregiver)
+                for caregiver in data.get("caregivers", [])
+                if isinstance(caregiver, dict)
+            ]
+            for alias, data in self.patient_data.items()
+        }
+        care_sequence_before = self._care_event_sequence
+
+        await self.async_request_refresh()
+
+        for alias in list(self.patient_data):
+            await self.async_refresh_presence_context(alias)
+
+        for alias, current in self.patient_data.items():
+            self._fire_care_events(
+                alias,
+                previous_caregivers.get(alias, []),
+                current.get("caregivers", []),
+                skip_if_emitted_after=care_sequence_before,
+            )
+
+        self._update_poll_interval()
+        self.async_set_updated_data(self._snapshot())
+
+        if self.patient_data:
+            async_dispatcher_send(
+                self.hass,
+                signal_patients_changed(self.entry.entry_id),
+                list(self.patient_data),
+            )
+
     def start_sse_listener(self):
         if self._sse_task and not self._sse_task.done():
             return
@@ -418,6 +471,8 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                             import json
                             signal = json.loads(data_lines[0])
                             if isinstance(signal, dict) and signal.get("patientId"):
-                                self.hass.async_create_task(self.async_request_refresh())
+                                self.hass.async_create_task(
+                                    self._async_handle_realtime_invalidation()
+                                )
                         except Exception:
                             pass
