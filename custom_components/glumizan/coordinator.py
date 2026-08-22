@@ -20,7 +20,7 @@ except ModuleNotFoundError:  # lightweight contract-test stubs omit HA storage
 
         async def async_save(self, value):
             self._data[self._key] = value
-from .const import CONF_BASE_URL, CONF_CALLBACK_SECRET, DOMAIN, signal_patients_changed
+from .const import CONF_BASE_URL, CONF_CALLBACK_SECRET, DOMAIN, SSE_STREAM_PATH, SSE_RECONNECT_BASE_SECONDS, SSE_RECONNECT_MAX_SECONDS, SSE_BACKOFF_MULTIPLIER, signal_patients_changed
 
 _LOGGER = logging.getLogger(__name__)
 _DELIVERY_DEDUP_VERSION = 1
@@ -78,9 +78,19 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         self._delivery_store = Store(hass, _DELIVERY_DEDUP_VERSION, f"{DOMAIN}.{entry.entry_id}.deliveries")
         self._processed_delivery_ids = set()
         self._delivery_dedup_loaded = False
+        self._fired_opened_episode_ids = set()
+        self._fired_alert_transition_keys = set()
+        self._sse_task = None
+        self._sse_reconnect_delay = SSE_RECONNECT_BASE_SECONDS
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=_IDLE_UPDATE_INTERVAL)
 
     async def async_close(self):
+        if self._sse_task and not self._sse_task.done():
+            self._sse_task.cancel()
+            try:
+                await self._sse_task
+            except asyncio.CancelledError:
+                pass
         await self._session.close()
 
     def _snapshot(self):
@@ -117,6 +127,9 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             alias = event["patientAlias"]
             if alias not in self.patient_data:
                 new_aliases.append(alias)
+            prev = self.patient_data.get(alias, {})
+            prev_alerts = list(prev.get("active_alerts", []))
+            prev_caregivers = list(prev.get("caregivers", []))
             current = self.patient_data.setdefault(alias, {"alias": alias, "glucose": None, "trend": None, "freshness": "UNKNOWN", "episode": None, "active_alerts": [], "caregivers": []})
             payload = event.get("payload", {})
             glucose = payload.get("glucose")
@@ -137,6 +150,9 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             if isinstance(event["id"], str) and len(event["id"]) == 36:
                 event_ids.append(event["id"])
             await self.async_refresh_presence_context(alias)
+            new_alerts = current.get("active_alerts", [])
+            self._fire_alert_events(alias, prev_alerts, new_alerts)
+            self._fire_care_events(alias, prev_caregivers, current.get("caregivers", []))
         self._update_poll_interval()
         self.async_set_updated_data(self._snapshot())
         if new_aliases:
@@ -209,7 +225,18 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             }
             if isinstance(delivery.get("glucose"), dict):
                 event_data["glucose"] = delivery["glucose"]
-            self.hass.bus.async_fire(f"{DOMAIN}_alert", event_data)
+            transition_action = event_data.get("action")
+            transition_episode_id = event_data.get("episode_id")
+            transition_key = (
+                str(transition_episode_id),
+                str(transition_action),
+            ) if transition_episode_id and transition_action in ("opened", "resolved") else None
+            if transition_key is None or transition_key not in self._fired_alert_transition_keys:
+                self.hass.bus.async_fire(f"{DOMAIN}_alert", event_data)
+                if transition_key is not None:
+                    self._fired_alert_transition_keys.add(transition_key)
+                    if transition_action == "opened":
+                        self._fired_opened_episode_ids.add(str(transition_episode_id))
             acknowledged.append(delivery_id)
         if acknowledged:
             try:
@@ -234,29 +261,64 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 continue
             aid = alert.get("id")
             if aid and aid not in prev_ids:
-                self.hass.bus.async_fire(f"{DOMAIN}_alert", {
-                    "patient_alias": alias,
-                    "action": "opened",
-                    "category": alert.get("category"),
-                    "episode_id": aid,
-                    "occurrence_count": alert.get("occurrenceCount"),
-                })
+                transition_key = (str(aid), "opened")
+                if transition_key not in self._fired_alert_transition_keys:
+                    self.hass.bus.async_fire(f"{DOMAIN}_alert", {
+                        "patient_alias": alias,
+                        "action": "opened",
+                        "category": alert.get("category"),
+                        "episode_id": aid,
+                        "occurrence_count": alert.get("occurrenceCount"),
+                    })
+                    self._fired_alert_transition_keys.add(transition_key)
+                self._fired_opened_episode_ids.add(aid)
         for alert in previous_alerts:
             if not isinstance(alert, dict):
                 continue
             aid = alert.get("id")
             if aid and aid not in curr_ids:
-                self.hass.bus.async_fire(f"{DOMAIN}_alert", {
+                transition_key = (str(aid), "resolved")
+                if transition_key not in self._fired_alert_transition_keys:
+                    self.hass.bus.async_fire(f"{DOMAIN}_alert", {
+                        "patient_alias": alias,
+                        "action": "resolved",
+                        "category": alert.get("category"),
+                        "episode_id": aid,
+                    })
+                    self._fired_alert_transition_keys.add(transition_key)
+                self._fired_opened_episode_ids.discard(aid)
+
+    def _fire_care_events(self, alias, previous_caregivers, current_caregivers):
+        prev_states = {}
+        for cg in previous_caregivers:
+            if isinstance(cg, dict):
+                gid = cg.get("grant_id")
+                if gid:
+                    prev_states[gid] = cg.get("care_state")
+        for cg in current_caregivers:
+            if not isinstance(cg, dict):
+                continue
+            gid = cg.get("grant_id")
+            if not gid:
+                continue
+            curr_state = cg.get("care_state")
+            prev_state = prev_states.get(gid)
+            if prev_state is not None and curr_state != prev_state:
+                self.hass.bus.async_fire(f"{DOMAIN}_care", {
                     "patient_alias": alias,
-                    "action": "resolved",
-                    "category": alert.get("category"),
-                    "episode_id": aid,
+                    "grant_id": gid,
+                    "care_state": curr_state,
+                    "previous_care_state": prev_state,
+                    "display_label": cg.get("display_label"),
                 })
 
     def _base_url(self):
         return self.entry.data[CONF_BASE_URL]
 
     async def async_command(self, alias, grant_id, action, episode_id=None):
+        previous_caregivers = list(
+            self.patient_data.get(alias, {}).get("caregivers", [])
+        )
         headers = {"Idempotency-Key": str(uuid.uuid4()), **self._headers()}
         body = {"action": action, "patientAlias": alias, "grantId": grant_id, "metadata": {"action": "caregiver_response"}}
         if episode_id:
@@ -265,6 +327,11 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             if response.status >= 300:
                 raise UpdateFailed("GluMizan command rejected")
         await self.async_refresh_presence_context(alias)
+        self._fire_care_events(
+            alias,
+            previous_caregivers,
+            self.patient_data.get(alias, {}).get("caregivers", []),
+        )
         self.async_set_updated_data(self._snapshot())
 
     async def async_refresh_presence_context(self, alias):
@@ -304,3 +371,53 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         if not episode_id:
             raise UpdateFailed("No active GluMizan episode for this patient")
         await self.async_command(alias, grant_id, "caregiver.acknowledge", episode_id)
+
+    def start_sse_listener(self):
+        if self._sse_task and not self._sse_task.done():
+            return
+        self._sse_task = self.hass.async_create_background_task(
+            self._sse_listener_loop(), f"{DOMAIN}_sse_{self.entry.entry_id}"
+        )
+
+    async def _sse_listener_loop(self):
+        backoff = SSE_RECONNECT_BASE_SECONDS
+        while True:
+            try:
+                await self._sse_connect_once()
+                backoff = SSE_RECONNECT_BASE_SECONDS
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                _LOGGER.debug("GluMizan SSE connection lost, reconnecting in %ss", backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * SSE_BACKOFF_MULTIPLIER, SSE_RECONNECT_MAX_SECONDS)
+
+    async def _sse_connect_once(self):
+        url = f"{self._base_url()}{SSE_STREAM_PATH}"
+        headers = self._headers()
+        async with self._session.get(url, headers=headers) as response:
+            if response.status >= 300:
+                _LOGGER.warning("GluMizan SSE rejected with status %s", response.status)
+                raise UpdateFailed(f"SSE rejected {response.status}")
+            buffer = ""
+            async for chunk in response.content.iter_any():
+                buffer += chunk.decode("utf-8", errors="replace")
+                while "\n\n" in buffer:
+                    event_block, buffer = buffer.split("\n\n", 1)
+                    event_type = None
+                    data_lines = []
+                    for line in event_block.split("\n"):
+                        if line.startswith("event: "):
+                            event_type = line[7:].strip()
+                        elif line.startswith("data: "):
+                            data_lines.append(line[6:])
+                        elif line.startswith(":"):
+                            continue
+                    if event_type == "state.changed" and data_lines:
+                        try:
+                            import json
+                            signal = json.loads(data_lines[0])
+                            if isinstance(signal, dict) and signal.get("patientId"):
+                                self.hass.async_create_task(self.async_request_refresh())
+                        except Exception:
+                            pass
