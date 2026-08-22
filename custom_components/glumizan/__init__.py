@@ -24,6 +24,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coordinator.async_request_reconcile()
         await coordinator.async_request_refresh()
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        coordinator.start_sse_listener()
     except Exception:
         hass.data[DOMAIN].pop(entry.entry_id, None)
         await coordinator.async_close()
