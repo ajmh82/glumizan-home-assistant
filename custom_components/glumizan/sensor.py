@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
@@ -7,6 +9,9 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from .const import DOMAIN, signal_patients_changed
 from .presentation import last_reading_time, nightscout_direction, trend_presentation
+
+
+_CAREGIVER_ENTITY_ID = re.compile(rf"^{DOMAIN}_[^_]+_[0-9a-f]{{8}}-[0-9a-f-]{{27,}}_.+$", re.IGNORECASE)
 
 
 def cleanup_stale_caregiver_entities(hass, entry, expected_unique_ids, suffix):
@@ -21,7 +26,10 @@ def cleanup_stale_caregiver_entities(hass, entry, expected_unique_ids, suffix):
         for entity in er.async_entries_for_config_entry_id(registry, entry.entry_id)
         if isinstance(entity.unique_id, str)
         and entity.unique_id.startswith(f"{DOMAIN}_")
-        and entity.unique_id.endswith(suffix)
+        and (
+            entity.unique_id.endswith(suffix)
+            or _CAREGIVER_ENTITY_ID.fullmatch(entity.unique_id) is not None
+        )
         and entity.unique_id not in expected_unique_ids
     ]
     if not stale:
@@ -53,16 +61,29 @@ async def async_setup_entry(hass, entry, async_add_entities):
         entities.extend(GluMizanCaregiverSensor(coordinator, alias, caregiver) for alias, caregiver in caregiver_pending)
         if entities:
             async_add_entities(entities)
+        cleanup_stale_caregiver_entities(
+            hass,
+            entry,
+            {
+                f"{DOMAIN}_{alias}_{caregiver.get('grant_id')}_{entity_type}"
+                for alias in aliases
+                for caregiver in patient_row(alias).get("caregivers", [])
+                if caregiver.get("grant_id")
+                for entity_type in ("caregiver", "acknowledge", "arrive", "leave")
+            },
+            "_caregiver",
+        )
     patient_aliases = list(getattr(coordinator, "patient_data", coordinator.data).keys())
     add(patient_aliases)
     cleanup_stale_caregiver_entities(
         hass,
         entry,
         {
-            f"{DOMAIN}_{alias}_{caregiver.get('grant_id')}_caregiver"
+            f"{DOMAIN}_{alias}_{caregiver.get('grant_id')}_{entity_type}"
             for alias in patient_aliases
             for caregiver in patient_row(alias).get("caregivers", [])
             if caregiver.get("grant_id")
+            for entity_type in ("caregiver", "acknowledge", "arrive", "leave")
         },
         "_caregiver",
     )

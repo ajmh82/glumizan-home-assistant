@@ -21,6 +21,15 @@ async def async_setup_entry(hass, entry, async_add_entities):
         if pending:
             entities = [entity for alias, caregiver in pending for entity in (GluMizanAcknowledgeButton(coordinator, alias, caregiver["grant_id"]), GluMizanPresenceButton(coordinator, alias, caregiver["grant_id"], "start"), GluMizanPresenceButton(coordinator, alias, caregiver["grant_id"], "end"))]
             async_add_entities(entities)
+        expected = {
+            f"{DOMAIN}_{alias}_{caregiver.get('grant_id')}_{action}"
+            for alias in aliases
+            for caregiver in patient_row(alias).get("caregivers", [])
+            if caregiver.get("grant_id")
+            for action in ("caregiver", "acknowledge", "arrive", "leave")
+        }
+        for suffix in ("_acknowledge", "_arrive", "_leave"):
+            cleanup_stale_caregiver_entities(hass, entry, expected, suffix)
     patient_aliases = list(getattr(coordinator, "patient_data", coordinator.data).keys())
     add(patient_aliases)
     expected = {
@@ -28,7 +37,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         for alias in patient_aliases
         for caregiver in patient_row(alias).get("caregivers", [])
         if caregiver.get("grant_id")
-        for action in ("acknowledge", "arrive", "leave")
+        for action in ("caregiver", "acknowledge", "arrive", "leave")
     }
     for suffix in ("_acknowledge", "_arrive", "_leave"):
         cleanup_stale_caregiver_entities(hass, entry, expected, suffix)
