@@ -27,6 +27,7 @@ _DELIVERY_DEDUP_VERSION = 1
 _DELIVERY_DEDUP_LIMIT = 512
 _IDLE_UPDATE_INTERVAL = timedelta(seconds=30)
 _ACTIVE_UPDATE_INTERVAL = timedelta(seconds=2)
+_TOPOLOGY_RELOAD_DEBOUNCE_SECONDS = 0.25
 
 
 def re_full_uuid(value):
@@ -84,6 +85,9 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         self._sse_reconnect_delay = SSE_RECONNECT_BASE_SECONDS
         self._care_event_sequence = 0
         self._care_event_sequence_by_key = {}
+        self._caregiver_topology_fingerprint = None
+        self._topology_reload_task = None
+        self._topology_reload_in_flight = False
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=_IDLE_UPDATE_INTERVAL)
 
     async def async_close(self):
@@ -91,6 +95,16 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             self._sse_task.cancel()
             try:
                 await self._sse_task
+            except asyncio.CancelledError:
+                pass
+        if (
+            self._topology_reload_task
+            and not self._topology_reload_task.done()
+            and self._topology_reload_task is not asyncio.current_task()
+        ):
+            self._topology_reload_task.cancel()
+            try:
+                await self._topology_reload_task
             except asyncio.CancelledError:
                 pass
         await self._session.close()
@@ -116,17 +130,22 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 async with self._session.get(f"{self._base_url()}/v1/integrations/home-assistant/events?limit=100", headers=self._headers()) as response:
                     if response.status < 300:
                         body = await response.json()
-                        await self.async_receive_events(body.get("events", []))
+                        await self.async_receive_events(
+                            body.get("events", []),
+                            canonical=True,
+                        )
                         await self.async_receive_delivery_events(body.get("deliveries", []))
                 return self._snapshot()
         except TimeoutError as error:
             raise UpdateFailed("GluMizan bridge unavailable") from error
 
-    async def async_receive_events(self, events):
+    async def async_receive_events(self, events, canonical=False):
         event_ids = []
         new_aliases = []
+        received_aliases = set()
         for event in events:
             alias = event["patientAlias"]
+            received_aliases.add(alias)
             if alias not in self.patient_data:
                 new_aliases.append(alias)
             prev = self.patient_data.get(alias, {})
@@ -138,9 +157,9 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             if glucose:
                 current.update(glucose)
             if "caregivers" in payload:
-                incoming = normalize_caregivers(payload.get("caregivers"))
-                if incoming or not current.get("caregivers"):
-                    current["caregivers"] = incoming
+                current["caregivers"] = normalize_caregivers(
+                    payload.get("caregivers")
+                )
             if event["type"].startswith("episode."):
                 current["episode"] = event["type"]
                 episode_id = payload.get("episodeId") or payload.get("activeEpisodeId")
@@ -155,8 +174,12 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             new_alerts = current.get("active_alerts", [])
             self._fire_alert_events(alias, prev_alerts, new_alerts)
             self._fire_care_events(alias, prev_caregivers, current.get("caregivers", []))
+        if canonical:
+            for alias in set(self.patient_data).difference(received_aliases):
+                self.patient_data.pop(alias, None)
         self._update_poll_interval()
         self.async_set_updated_data(self._snapshot())
+        await self._async_check_caregiver_topology()
         if new_aliases:
             async_dispatcher_send(self.hass, signal_patients_changed(self.entry.entry_id), new_aliases)
         else:
@@ -360,7 +383,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 caregivers = normalize_caregivers(payload.get("caregivers", []))
                 current = self.patient_data.setdefault(alias, {"alias": alias, "glucose": None, "trend": None, "freshness": "UNKNOWN", "episode": None, "active_alerts": [], "caregivers": []})
                 caregivers_updated = False
-                if caregivers or not current.get("caregivers"):
+                if "caregivers" in payload:
                     current["caregivers"] = caregivers
                     caregivers_updated = True
                 if "activeEpisodeIds" in payload:
@@ -382,6 +405,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 _LOGGER.warning("GluMizan reconcile request failed with status %s", response.status)
         for alias in list(self.patient_data):
             await self.async_refresh_presence_context(alias)
+        await self._async_check_caregiver_topology()
         if self.patient_data:
             self.async_set_updated_data(self._snapshot())
             async_dispatcher_send(self.hass, signal_patients_changed(self.entry.entry_id), list(self.patient_data))
@@ -417,6 +441,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
 
         self._update_poll_interval()
         self.async_set_updated_data(self._snapshot())
+        await self._async_check_caregiver_topology()
 
         if self.patient_data:
             async_dispatcher_send(
@@ -424,6 +449,52 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 signal_patients_changed(self.entry.entry_id),
                 list(self.patient_data),
             )
+
+    def _caregiver_topology(self):
+        topology = []
+        for alias, patient in self.patient_data.items():
+            if not isinstance(alias, str) or not isinstance(patient, dict):
+                continue
+            patient_id = alias.strip().lower()
+            if not patient_id:
+                continue
+            for caregiver in patient.get("caregivers", []):
+                if not isinstance(caregiver, dict):
+                    continue
+                grant_id = caregiver.get("grant_id")
+                if isinstance(grant_id, str) and grant_id.strip():
+                    topology.append((patient_id, grant_id.strip().lower()))
+        return tuple(sorted(set(topology)))
+
+    async def _async_check_caregiver_topology(self):
+        current = self._caregiver_topology()
+        if self._caregiver_topology_fingerprint is None:
+            self._caregiver_topology_fingerprint = current
+            return
+        if current == self._caregiver_topology_fingerprint:
+            return
+        self._caregiver_topology_fingerprint = current
+        self._async_schedule_topology_reload()
+
+    def _async_schedule_topology_reload(self):
+        if self._topology_reload_in_flight:
+            return
+        if self._topology_reload_task and not self._topology_reload_task.done():
+            return
+        self._topology_reload_task = self.hass.async_create_task(
+            self._async_reload_for_caregiver_topology()
+        )
+
+    async def _async_reload_for_caregiver_topology(self):
+        await asyncio.sleep(_TOPOLOGY_RELOAD_DEBOUNCE_SECONDS)
+        if self._topology_reload_in_flight:
+            return
+        self._topology_reload_in_flight = True
+        try:
+            await self.hass.config_entries.async_reload(self.entry.entry_id)
+        finally:
+            self._topology_reload_in_flight = False
+            self._topology_reload_task = None
 
     def start_sse_listener(self):
         if self._sse_task and not self._sse_task.done():

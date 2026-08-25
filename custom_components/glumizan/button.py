@@ -4,6 +4,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from .const import signal_patients_changed
+from .sensor import cleanup_stale_caregiver_entities
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -22,6 +23,15 @@ async def async_setup_entry(hass, entry, async_add_entities):
             async_add_entities(entities)
     patient_aliases = list(getattr(coordinator, "patient_data", coordinator.data).keys())
     add(patient_aliases)
+    expected = {
+        f"{DOMAIN}_{alias}_{caregiver.get('grant_id')}_{action}"
+        for alias in patient_aliases
+        for caregiver in patient_row(alias).get("caregivers", [])
+        if caregiver.get("grant_id")
+        for action in ("acknowledge", "arrive", "leave")
+    }
+    for suffix in ("_acknowledge", "_arrive", "_leave"):
+        cleanup_stale_caregiver_entities(hass, entry, expected, suffix)
     entry.async_on_unload(async_dispatcher_connect(hass, signal_patients_changed(entry.entry_id), add))
     add(patient_aliases)
 

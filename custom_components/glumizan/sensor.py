@@ -9,6 +9,32 @@ from .const import DOMAIN, signal_patients_changed
 from .presentation import last_reading_time, nightscout_direction, trend_presentation
 
 
+def cleanup_stale_caregiver_entities(hass, entry, expected_unique_ids, suffix):
+    try:
+        from homeassistant.helpers import device_registry as dr
+        from homeassistant.helpers import entity_registry as er
+    except (ImportError, ModuleNotFoundError):
+        return
+    registry = er.async_get(hass)
+    stale = [
+        entity
+        for entity in er.async_entries_for_config_entry_id(registry, entry.entry_id)
+        if isinstance(entity.unique_id, str)
+        and entity.unique_id.startswith(f"{DOMAIN}_")
+        and entity.unique_id.endswith(suffix)
+        and entity.unique_id not in expected_unique_ids
+    ]
+    if not stale:
+        return
+    device_ids = {entity.device_id for entity in stale if entity.device_id}
+    for entity in stale:
+        registry.async_remove(entity.entity_id)
+    devices = dr.async_get(hass)
+    for device_id in device_ids:
+        if not er.async_entries_for_device(registry, device_id):
+            devices.async_remove_device(device_id)
+
+
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
     known = set()
@@ -29,6 +55,17 @@ async def async_setup_entry(hass, entry, async_add_entities):
             async_add_entities(entities)
     patient_aliases = list(getattr(coordinator, "patient_data", coordinator.data).keys())
     add(patient_aliases)
+    cleanup_stale_caregiver_entities(
+        hass,
+        entry,
+        {
+            f"{DOMAIN}_{alias}_{caregiver.get('grant_id')}_caregiver"
+            for alias in patient_aliases
+            for caregiver in patient_row(alias).get("caregivers", [])
+            if caregiver.get("grant_id")
+        },
+        "_caregiver",
+    )
     entry.async_on_unload(async_dispatcher_connect(hass, signal_patients_changed(entry.entry_id), add))
     add(patient_aliases)
 
@@ -102,7 +139,8 @@ class GluMizanCaregiverSensor(GluMizanPatientEntity, SensorEntity):
         grant_id = caregiver["grant_id"]
         self.grant_id = grant_id
         self._attr_unique_id = f"{DOMAIN}_{alias}_{grant_id}_caregiver"
-        self._attr_name = caregiver.get("display_label") or "Caregiver"
+        display_label = str(caregiver.get("display_label") or "Caregiver").strip()
+        self._attr_name = f"{display_label or 'Caregiver'} ({grant_id[:8]})"
 
     @property
     def caregiver(self):
