@@ -8,11 +8,13 @@ from datetime import timedelta
 import aiohttp
 try:
     from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
-    from homeassistant.core import CoreState
+    from homeassistant.core import CoreState, callback
 except ModuleNotFoundError:  # lightweight contract-test stubs omit HA core
     EVENT_HOMEASSISTANT_STARTED = "homeassistant_started"
     class CoreState:
         running = "RUNNING"
+    def callback(function):
+        return function
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 try:
@@ -351,6 +353,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             await self.async_report_notification_destinations()
             return
 
+        @callback
         def _async_report_after_hass_started(_event):
             self._unsub_notification_destination_startup = None
             if self._notification_destinations_reported or self._notification_destination_report_task:
