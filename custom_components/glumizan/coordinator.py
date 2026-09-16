@@ -288,7 +288,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             services = {}
         if isinstance(services, dict):
             for service_name in services:
-                if isinstance(service_name, str) and re.fullmatch(r"[A-Za-z0-9_]+", service_name):
+                if isinstance(service_name, str) and service_name not in {"send_message", "notify", "persistent_notification"} and re.fullmatch(r"[A-Za-z0-9_]+", service_name):
                     destinations.append({"kind": "LEGACY_SERVICE", "identifier": f"notify.{service_name}"})
         try:
             entities = self.hass.states.async_all("notify")
