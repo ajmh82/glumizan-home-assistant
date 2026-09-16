@@ -28,6 +28,7 @@ _DELIVERY_DEDUP_LIMIT = 512
 _IDLE_UPDATE_INTERVAL = timedelta(seconds=30)
 _ACTIVE_UPDATE_INTERVAL = timedelta(seconds=2)
 _TOPOLOGY_RELOAD_DEBOUNCE_SECONDS = 0.25
+_NOTIFICATION_DESTINATION_LIMIT = 200
 
 
 def re_full_uuid(value):
@@ -278,6 +279,46 @@ class GluMizanCoordinator(DataUpdateCoordinator):
     def _headers(self):
         return {"X-Home-Assistant-Signature": self.entry.data[CONF_CALLBACK_SECRET]}
 
+    def _notification_destinations(self):
+        destinations = []
+        try:
+            services = self.hass.services.async_services_for_domain("notify")
+        except (AttributeError, TypeError):
+            services = {}
+        if isinstance(services, dict):
+            for service_name in services:
+                if isinstance(service_name, str) and re.fullmatch(r"[A-Za-z0-9_]+", service_name):
+                    destinations.append({"kind": "LEGACY_SERVICE", "identifier": f"notify.{service_name}"})
+        try:
+            entities = self.hass.states.async_all("notify")
+        except (AttributeError, TypeError):
+            entities = []
+        for entity in entities:
+            identifier = getattr(entity, "entity_id", None)
+            if not isinstance(identifier, str) or not re.fullmatch(r"notify\.[a-z0-9_]+", identifier):
+                continue
+            label = getattr(entity, "name", None)
+            item = {"kind": "NOTIFY_ENTITY", "identifier": identifier}
+            if isinstance(label, str) and 0 < len(label.strip()) <= 120:
+                item["displayLabel"] = label.strip()
+            destinations.append(item)
+        unique = {}
+        for destination in destinations:
+            unique[(destination["kind"], destination["identifier"])] = destination
+        return list(unique.values())[:_NOTIFICATION_DESTINATION_LIMIT]
+
+    async def async_report_notification_destinations(self):
+        try:
+            async with self._session.post(
+                f"{self._base_url()}/v1/integrations/home-assistant/notification-destinations",
+                headers=self._headers(),
+                json={"destinations": self._notification_destinations()},
+            ) as response:
+                if response.status >= 300:
+                    _LOGGER.warning("GluMizan notification destination report failed with status %s", response.status)
+        except Exception:
+            _LOGGER.warning("GluMizan notification destination report failed", exc_info=True)
+
     def _fire_alert_events(self, alias, previous_alerts, current_alerts):
         prev_ids = {a.get("id") for a in previous_alerts if isinstance(a, dict)}
         curr_ids = {a.get("id") for a in current_alerts if isinstance(a, dict)}
@@ -403,6 +444,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         async with self._session.post(f"{self._base_url()}/v1/integrations/home-assistant/reconcile", headers=headers, json={}) as response:
             if response.status >= 300:
                 _LOGGER.warning("GluMizan reconcile request failed with status %s", response.status)
+        await self.async_report_notification_destinations()
         for alias in list(self.patient_data):
             await self.async_refresh_presence_context(alias)
         await self._async_check_caregiver_topology()
