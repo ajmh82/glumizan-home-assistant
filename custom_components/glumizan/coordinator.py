@@ -6,6 +6,13 @@ import re
 import uuid
 from datetime import timedelta
 import aiohttp
+try:
+    from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+    from homeassistant.core import CoreState
+except ModuleNotFoundError:  # lightweight contract-test stubs omit HA core
+    EVENT_HOMEASSISTANT_STARTED = "homeassistant_started"
+    class CoreState:
+        running = "RUNNING"
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 try:
@@ -90,9 +97,25 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         self._caregiver_topology_fingerprint = None
         self._topology_reload_task = None
         self._topology_reload_in_flight = False
+        self._unsub_notification_destination_startup = None
+        self._notification_destination_report_task = None
+        self._notification_destinations_reported = False
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=_IDLE_UPDATE_INTERVAL)
 
     async def async_close(self):
+        if self._unsub_notification_destination_startup:
+            self._unsub_notification_destination_startup()
+            self._unsub_notification_destination_startup = None
+        if (
+            self._notification_destination_report_task
+            and not self._notification_destination_report_task.done()
+            and self._notification_destination_report_task is not asyncio.current_task()
+        ):
+            self._notification_destination_report_task.cancel()
+            try:
+                await self._notification_destination_report_task
+            except asyncio.CancelledError:
+                pass
         if self._sse_task and not self._sse_task.done():
             self._sse_task.cancel()
             try:
@@ -320,6 +343,33 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         except Exception:
             _LOGGER.warning("GluMizan notification destination report failed", exc_info=True)
 
+    async def async_report_notification_destinations_when_ready(self):
+        if self._notification_destinations_reported or self._notification_destination_report_task or self._unsub_notification_destination_startup:
+            return
+        if self.hass.state is CoreState.running:
+            self._notification_destinations_reported = True
+            await self.async_report_notification_destinations()
+            return
+
+        def _async_report_after_hass_started(_event):
+            self._unsub_notification_destination_startup = None
+            if self._notification_destinations_reported or self._notification_destination_report_task:
+                return
+            self._notification_destination_report_task = self.hass.async_create_task(
+                self._async_report_notification_destinations_after_start()
+            )
+
+        self._unsub_notification_destination_startup = self.hass.bus.async_listen_once(
+            EVENT_HOMEASSISTANT_STARTED, _async_report_after_hass_started
+        )
+
+    async def _async_report_notification_destinations_after_start(self):
+        self._notification_destinations_reported = True
+        try:
+            await self.async_report_notification_destinations()
+        finally:
+            self._notification_destination_report_task = None
+
     def _fire_alert_events(self, alias, previous_alerts, current_alerts):
         prev_ids = {a.get("id") for a in previous_alerts if isinstance(a, dict)}
         curr_ids = {a.get("id") for a in current_alerts if isinstance(a, dict)}
@@ -445,7 +495,6 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         async with self._session.post(f"{self._base_url()}/v1/integrations/home-assistant/reconcile", headers=headers, json={}) as response:
             if response.status >= 300:
                 _LOGGER.warning("GluMizan reconcile request failed with status %s", response.status)
-        await self.async_report_notification_destinations()
         for alias in list(self.patient_data):
             await self.async_refresh_presence_context(alias)
         await self._async_check_caregiver_topology()
