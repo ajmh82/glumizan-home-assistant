@@ -53,9 +53,17 @@ async def async_setup_entry(hass, entry, async_add_entities):
     def add(aliases):
         if isinstance(aliases, dict):
             aliases = list(aliases.keys())
+        all_aliases = list(getattr(coordinator, "patient_data", coordinator.data).keys())
+        active_caregivers = {
+            (alias, caregiver.get("grant_id"))
+            for alias in all_aliases
+            for caregiver in patient_row(alias).get("caregivers", [])
+            if isinstance(caregiver, dict) and caregiver.get("grant_id")
+        }
+        caregiver_known.intersection_update(active_caregivers)
         pending = [alias for alias in aliases if alias not in known]
         known.update(pending)
-        caregiver_pending = [(alias, caregiver) for alias in aliases for caregiver in patient_row(alias).get("caregivers", []) if (alias, caregiver.get("grant_id")) not in caregiver_known]
+        caregiver_pending = [(alias, caregiver) for alias in aliases for caregiver in patient_row(alias).get("caregivers", []) if caregiver.get("grant_id") and (alias, caregiver.get("grant_id")) not in caregiver_known]
         caregiver_known.update((alias, caregiver.get("grant_id")) for alias, caregiver in caregiver_pending)
         entities = [entity for alias in pending for entity in (GluMizanPatientStatusSensor(coordinator, alias), GluMizanGlucoseSensor(coordinator, alias), GluMizanStatusSensor(coordinator, alias), GluMizanActiveAlertSensor(coordinator, alias))]
         entities.extend(GluMizanCaregiverSensor(coordinator, alias, caregiver) for alias, caregiver in caregiver_pending)
@@ -66,7 +74,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
             entry,
             {
                 f"{DOMAIN}_{alias}_{caregiver.get('grant_id')}_{entity_type}"
-                for alias in aliases
+                for alias in all_aliases
                 for caregiver in patient_row(alias).get("caregivers", [])
                 if caregiver.get("grant_id")
                 for entity_type in ("caregiver", "acknowledge", "arrive", "leave")

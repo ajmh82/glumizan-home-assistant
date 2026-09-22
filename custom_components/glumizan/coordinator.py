@@ -37,8 +37,8 @@ _DELIVERY_DEDUP_VERSION = 1
 _DELIVERY_DEDUP_LIMIT = 512
 _IDLE_UPDATE_INTERVAL = timedelta(seconds=30)
 _ACTIVE_UPDATE_INTERVAL = timedelta(seconds=2)
-_TOPOLOGY_RELOAD_DEBOUNCE_SECONDS = 0.25
 _NOTIFICATION_DESTINATION_LIMIT = 200
+_DIRECT_MOBILE_NOTIFICATION_TITLE = "GluMizan Alert"
 
 
 def re_full_uuid(value):
@@ -96,12 +96,10 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         self._sse_reconnect_delay = SSE_RECONNECT_BASE_SECONDS
         self._care_event_sequence = 0
         self._care_event_sequence_by_key = {}
-        self._caregiver_topology_fingerprint = None
-        self._topology_reload_task = None
-        self._topology_reload_in_flight = False
         self._unsub_notification_destination_startup = None
         self._notification_destination_report_task = None
         self._notification_destinations_reported = False
+        self._notification_destinations_fingerprint = None
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=_IDLE_UPDATE_INTERVAL)
 
     async def async_close(self):
@@ -122,16 +120,6 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             self._sse_task.cancel()
             try:
                 await self._sse_task
-            except asyncio.CancelledError:
-                pass
-        if (
-            self._topology_reload_task
-            and not self._topology_reload_task.done()
-            and self._topology_reload_task is not asyncio.current_task()
-        ):
-            self._topology_reload_task.cancel()
-            try:
-                await self._topology_reload_task
             except asyncio.CancelledError:
                 pass
         await self._session.close()
@@ -206,7 +194,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 self.patient_data.pop(alias, None)
         self._update_poll_interval()
         self.async_set_updated_data(self._snapshot())
-        await self._async_check_caregiver_topology()
+        await self.async_report_notification_destinations_if_changed()
         if new_aliases:
             async_dispatcher_send(self.hass, signal_patients_changed(self.entry.entry_id), new_aliases)
         else:
@@ -254,11 +242,6 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             if delivery_id in self._processed_delivery_ids:
                 acknowledged.append(delivery_id)
                 continue
-            try:
-                await self._async_record_delivery(delivery_id)
-            except Exception:
-                _LOGGER.warning("GluMizan alert delivery could not be persisted", exc_info=True)
-                continue
             event_data = {
                 "delivery_id": delivery_id,
                 "patient_alias": alias,
@@ -272,11 +255,22 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 "recipient_ref": delivery.get("recipient_ref"),
                 "route_key": delivery.get("route_key"),
                 "notification_target": delivery.get("notification_target"),
+                "notification_platform": delivery.get("notification_platform"),
+                "message_ar": delivery.get("message_ar"),
+                "message_en": delivery.get("message_en"),
                 "is_test": is_test,
                 "created_at": delivery.get("created_at"),
             }
             if isinstance(delivery.get("glucose"), dict):
                 event_data["glucose"] = delivery["glucose"]
+            if self._is_direct_mobile_delivery(event_data):
+                if not await self._async_send_direct_mobile_notification(event_data):
+                    continue
+            try:
+                await self._async_record_delivery(delivery_id)
+            except Exception:
+                _LOGGER.warning("GluMizan alert delivery could not be persisted", exc_info=True)
+                continue
             transition_action = event_data.get("action")
             transition_episode_id = event_data.get("episode_id")
             transition_key = (
@@ -328,20 +322,148 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             if isinstance(label, str) and 0 < len(label.strip()) <= 120:
                 item["displayLabel"] = label.strip()
             destinations.append(item)
+        try:
+            mobile_entries = self.hass.config_entries.async_entries("mobile_app")
+        except (AttributeError, TypeError):
+            mobile_entries = []
+        mobile_services = self._mobile_app_notify_services(mobile_entries, services)
         unique = {}
         for destination in destinations:
             unique[(destination["kind"], destination["identifier"])] = destination
+        for destination in mobile_services:
+            unique[(destination["kind"], destination["identifier"])] = destination
         return list(unique.values())[:_NOTIFICATION_DESTINATION_LIMIT]
 
+    def _mobile_app_notify_services(self, entries, services):
+        """Return mobile registrations linked by HA runtime identity, never by name."""
+        try:
+            from homeassistant.const import ATTR_DEVICE_ID, CONF_WEBHOOK_ID
+            from homeassistant.components.mobile_app.const import (
+                ATTR_APP_ID,
+                ATTR_DEVICE_NAME,
+                ATTR_OS_NAME,
+                CONF_USER_ID,
+            )
+            from homeassistant.components.mobile_app.util import get_notify_service
+        except (ImportError, ModuleNotFoundError):
+            return []
+        discovered = []
+        available_services = set(services) if isinstance(services, dict) else set()
+        for entry in entries:
+            data = getattr(entry, "data", None)
+            if not isinstance(data, dict):
+                continue
+            user_id = data.get(CONF_USER_ID)
+            webhook_id = data.get(CONF_WEBHOOK_ID)
+            if not isinstance(user_id, str) or not user_id or not isinstance(webhook_id, str) or not webhook_id:
+                continue
+            # HA's mobile_app helper maps its private registration key to a service;
+            # that key remains local and is never reported to GluMizan.
+            service_name = get_notify_service(self.hass, webhook_id)
+            if not isinstance(service_name, str) or service_name not in available_services:
+                continue
+            identifier = f"notify.{service_name}"
+            if not re.fullmatch(r"notify\.mobile_app_[A-Za-z0-9_]+", identifier):
+                continue
+            metadata = {
+                "ownerHaUserId": user_id,
+                "mobileAppDeviceId": data.get(ATTR_DEVICE_ID),
+                "mobileAppDeviceName": data.get(ATTR_DEVICE_NAME),
+                "mobileAppAppId": data.get(ATTR_APP_ID),
+                "mobileAppOsName": data.get(ATTR_OS_NAME),
+            }
+            if not all(isinstance(value, str) and value for value in metadata.values()):
+                continue
+            discovered.append({"kind": "LEGACY_SERVICE", "identifier": identifier, **metadata})
+        return discovered
+
+    @staticmethod
+    def _is_direct_mobile_delivery(delivery):
+        target = delivery.get("notification_target")
+        return isinstance(target, str) and re.fullmatch(r"notify\.mobile_app_[A-Za-z0-9_]+", target) is not None
+
+    async def _async_send_direct_mobile_notification(self, delivery):
+        target = delivery.get("notification_target")
+        if not isinstance(target, str):
+            return False
+        service_name = target.removeprefix("notify.")
+        try:
+            services = self.hass.services.async_services_for_domain("notify")
+        except (AttributeError, TypeError):
+            return False
+        if not isinstance(services, dict) or service_name not in services:
+            _LOGGER.warning("GluMizan mobile notification service is unavailable")
+            return False
+        message = delivery.get("message_ar") or delivery.get("message_en")
+        if not isinstance(message, str) or not message:
+            _LOGGER.warning("GluMizan mobile notification has no message")
+            return False
+        title = delivery.get("title")
+        if not isinstance(title, str) or not title.strip():
+            title = _DIRECT_MOBILE_NOTIFICATION_TITLE
+        payload = {"title": title.strip(), "message": message}
+        platform = str(delivery.get("notification_platform") or "").lower()
+        if platform in {"ios", "iphone", "ipad"}:
+            payload["data"] = {
+                "priority": "high",
+                "push": {"sound": {"name": "default", "critical": 1, "volume": 1}},
+            }
+        elif platform == "android":
+            try:
+                await self.hass.services.async_call(
+                    "notify",
+                    service_name,
+                    {"message": "command_ringer_mode", "data": {"command": "normal"}},
+                    blocking=True,
+                )
+            except Exception:
+                _LOGGER.warning("GluMizan Android ringer-normal command failed", exc_info=True)
+            await asyncio.sleep(1)
+            payload["data"] = {"ttl": 0, "priority": "high", "channel": "alarm_stream"}
+            main_delivery_succeeded = False
+            try:
+                await self.hass.services.async_call("notify", service_name, payload, blocking=True)
+                main_delivery_succeeded = True
+            except Exception:
+                _LOGGER.warning("GluMizan direct mobile notification failed", exc_info=True)
+            finally:
+                await asyncio.sleep(5)
+                try:
+                    await self.hass.services.async_call(
+                        "notify",
+                        service_name,
+                        {"message": "command_ringer_mode", "data": {"command": "silent"}},
+                        blocking=True,
+                    )
+                except Exception:
+                    _LOGGER.warning("GluMizan Android ringer-silent restore failed", exc_info=True)
+            return main_delivery_succeeded
+        try:
+            await self.hass.services.async_call("notify", service_name, payload, blocking=True)
+        except Exception:
+            _LOGGER.warning("GluMizan direct mobile notification failed", exc_info=True)
+            return False
+        return True
+
     async def async_report_notification_destinations(self):
+        destinations = self._notification_destinations()
+        fingerprint = tuple(sorted(
+            tuple(sorted(destination.items()))
+            for destination in destinations
+        ))
+        if self._notification_destinations_reported and fingerprint == self._notification_destinations_fingerprint:
+            return
         try:
             async with self._session.post(
                 f"{self._base_url()}/v1/integrations/home-assistant/notification-destinations",
                 headers=self._headers(),
-                json={"destinations": self._notification_destinations()},
+                json={"destinations": destinations},
             ) as response:
                 if response.status >= 300:
                     _LOGGER.warning("GluMizan notification destination report failed with status %s", response.status)
+                    return
+            self._notification_destinations_fingerprint = fingerprint
+            self._notification_destinations_reported = True
         except Exception:
             _LOGGER.warning("GluMizan notification destination report failed", exc_info=True)
 
@@ -372,6 +494,24 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             await self.async_report_notification_destinations()
         finally:
             self._notification_destination_report_task = None
+
+    async def async_report_notification_destinations_if_changed(self):
+        if self._notification_destinations_reported:
+            await self.async_report_notification_destinations()
+
+    async def async_complete_identity_claim(self, claim_code, ha_user_id):
+        if not isinstance(claim_code, str) or not isinstance(ha_user_id, str):
+            return False
+        try:
+            async with self._session.post(
+                f"{self._base_url()}/v1/integrations/home-assistant/identity-claims/complete",
+                headers=self._headers(),
+                json={"claimCode": claim_code, "haUserId": ha_user_id},
+            ) as response:
+                return response.status < 300
+        except Exception:
+            _LOGGER.warning("GluMizan Home Assistant identity claim failed", exc_info=True)
+            return False
 
     def _fire_alert_events(self, alias, previous_alerts, current_alerts):
         prev_ids = {a.get("id") for a in previous_alerts if isinstance(a, dict)}
@@ -500,7 +640,6 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 _LOGGER.warning("GluMizan reconcile request failed with status %s", response.status)
         for alias in list(self.patient_data):
             await self.async_refresh_presence_context(alias)
-        await self._async_check_caregiver_topology()
         if self.patient_data:
             self.async_set_updated_data(self._snapshot())
             async_dispatcher_send(self.hass, signal_patients_changed(self.entry.entry_id), list(self.patient_data))
@@ -536,60 +675,12 @@ class GluMizanCoordinator(DataUpdateCoordinator):
 
         self._update_poll_interval()
         self.async_set_updated_data(self._snapshot())
-        await self._async_check_caregiver_topology()
-
         if self.patient_data:
             async_dispatcher_send(
                 self.hass,
                 signal_patients_changed(self.entry.entry_id),
                 list(self.patient_data),
             )
-
-    def _caregiver_topology(self):
-        topology = []
-        for alias, patient in self.patient_data.items():
-            if not isinstance(alias, str) or not isinstance(patient, dict):
-                continue
-            patient_id = alias.strip().lower()
-            if not patient_id:
-                continue
-            for caregiver in patient.get("caregivers", []):
-                if not isinstance(caregiver, dict):
-                    continue
-                grant_id = caregiver.get("grant_id")
-                if isinstance(grant_id, str) and grant_id.strip():
-                    topology.append((patient_id, grant_id.strip().lower()))
-        return tuple(sorted(set(topology)))
-
-    async def _async_check_caregiver_topology(self):
-        current = self._caregiver_topology()
-        if self._caregiver_topology_fingerprint is None:
-            self._caregiver_topology_fingerprint = current
-            return
-        if current == self._caregiver_topology_fingerprint:
-            return
-        self._caregiver_topology_fingerprint = current
-        self._async_schedule_topology_reload()
-
-    def _async_schedule_topology_reload(self):
-        if self._topology_reload_in_flight:
-            return
-        if self._topology_reload_task and not self._topology_reload_task.done():
-            return
-        self._topology_reload_task = self.hass.async_create_task(
-            self._async_reload_for_caregiver_topology()
-        )
-
-    async def _async_reload_for_caregiver_topology(self):
-        await asyncio.sleep(_TOPOLOGY_RELOAD_DEBOUNCE_SECONDS)
-        if self._topology_reload_in_flight:
-            return
-        self._topology_reload_in_flight = True
-        try:
-            await self.hass.config_entries.async_reload(self.entry.entry_id)
-        finally:
-            self._topology_reload_in_flight = False
-            self._topology_reload_task = None
 
     def start_sse_listener(self):
         if self._sse_task and not self._sse_task.done():

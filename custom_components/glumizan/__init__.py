@@ -10,6 +10,8 @@ from .coordinator import GluMizanCoordinator
 from .pairing import migrate_options_into_data
 
 VIEW_REGISTERED_KEY = "_glumizan_event_view_registered"
+CLAIM_SERVICE_REGISTERED_KEY = "_glumizan_identity_claim_service_registered"
+CLAIM_SERVICE = "connect_home_assistant_account"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -19,6 +21,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not hass.data.get(VIEW_REGISTERED_KEY):
         hass.http.register_view(GluMizanEventView())
         hass.data[VIEW_REGISTERED_KEY] = True
+    _register_identity_claim_service(hass)
     try:
         await coordinator.async_config_entry_first_refresh()
         await coordinator.async_request_reconcile()
@@ -39,7 +42,28 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_close()
     if not hass.data[DOMAIN]:
         hass.data.pop(VIEW_REGISTERED_KEY, None)
+        if hass.data.pop(CLAIM_SERVICE_REGISTERED_KEY, None):
+            hass.services.async_remove(DOMAIN, CLAIM_SERVICE)
     return unloaded
+
+
+def _register_identity_claim_service(hass):
+    if hass.data.get(CLAIM_SERVICE_REGISTERED_KEY) or not getattr(hass, "services", None):
+        return
+
+    async def async_connect_account(call):
+        claim_code = call.data.get("claim_code") if isinstance(call.data, dict) else None
+        ha_user_id = getattr(getattr(call, "context", None), "user_id", None)
+        if not isinstance(claim_code, str) or not isinstance(ha_user_id, str) or not ha_user_id:
+            raise ValueError("A signed-in Home Assistant user and claim code are required")
+        coordinators = list(hass.data.get(DOMAIN, {}).values())
+        for coordinator in coordinators:
+            if await coordinator.async_complete_identity_claim(claim_code, ha_user_id):
+                return
+        raise ValueError("The Home Assistant account claim could not be completed")
+
+    hass.services.async_register(DOMAIN, CLAIM_SERVICE, async_connect_account)
+    hass.data[CLAIM_SERVICE_REGISTERED_KEY] = True
 
 
 class GluMizanEventView(HomeAssistantView):

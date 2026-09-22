@@ -16,6 +16,14 @@ async def async_setup_entry(hass, entry, async_add_entities):
     def add(aliases):
         if isinstance(aliases, dict):
             aliases = list(aliases.keys())
+        all_aliases = list(getattr(coordinator, "patient_data", coordinator.data).keys())
+        active_caregivers = {
+            (alias, caregiver.get("grant_id"))
+            for alias in all_aliases
+            for caregiver in patient_row(alias).get("caregivers", [])
+            if isinstance(caregiver, dict) and caregiver.get("grant_id")
+        }
+        known.intersection_update(active_caregivers)
         pending = [(alias, caregiver) for alias in aliases for caregiver in patient_row(alias).get("caregivers", []) if caregiver.get("grant_id") and (alias, caregiver["grant_id"]) not in known]
         known.update((alias, caregiver["grant_id"]) for alias, caregiver in pending)
         if pending:
@@ -23,7 +31,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
             async_add_entities(entities)
         expected = {
             f"{DOMAIN}_{alias}_{caregiver.get('grant_id')}_{action}"
-            for alias in aliases
+            for alias in all_aliases
             for caregiver in patient_row(alias).get("caregivers", [])
             if caregiver.get("grant_id")
             for action in ("caregiver", "acknowledge", "arrive", "leave")
