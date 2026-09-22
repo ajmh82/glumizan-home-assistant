@@ -7,10 +7,16 @@ import uuid
 from datetime import timedelta
 import aiohttp
 try:
-    from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+    from homeassistant.const import (
+        EVENT_HOMEASSISTANT_STARTED,
+        EVENT_SERVICE_REGISTERED,
+        EVENT_SERVICE_REMOVED,
+    )
     from homeassistant.core import CoreState, callback
 except ModuleNotFoundError:  # lightweight contract-test stubs omit HA core
     EVENT_HOMEASSISTANT_STARTED = "homeassistant_started"
+    EVENT_SERVICE_REGISTERED = "service_registered"
+    EVENT_SERVICE_REMOVED = "service_removed"
     class CoreState:
         running = "RUNNING"
     def callback(function):
@@ -39,6 +45,7 @@ _IDLE_UPDATE_INTERVAL = timedelta(seconds=30)
 _ACTIVE_UPDATE_INTERVAL = timedelta(seconds=2)
 _NOTIFICATION_DESTINATION_LIMIT = 200
 _DIRECT_MOBILE_NOTIFICATION_TITLE = "GluMizan Alert"
+_MOBILE_APP_NOTIFY_SERVICE_PATTERN = re.compile(r"mobile_app_[A-Za-z0-9_]+")
 
 
 def re_full_uuid(value):
@@ -97,7 +104,9 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         self._care_event_sequence = 0
         self._care_event_sequence_by_key = {}
         self._unsub_notification_destination_startup = None
+        self._unsub_notification_destination_services = []
         self._notification_destination_report_task = None
+        self._notification_destination_reconcile_task = None
         self._notification_destinations_reported = False
         self._notification_destinations_fingerprint = None
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=_IDLE_UPDATE_INTERVAL)
@@ -106,6 +115,9 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         if self._unsub_notification_destination_startup:
             self._unsub_notification_destination_startup()
             self._unsub_notification_destination_startup = None
+        for unsubscribe in self._unsub_notification_destination_services:
+            unsubscribe()
+        self._unsub_notification_destination_services = []
         if (
             self._notification_destination_report_task
             and not self._notification_destination_report_task.done()
@@ -114,6 +126,16 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             self._notification_destination_report_task.cancel()
             try:
                 await self._notification_destination_report_task
+            except asyncio.CancelledError:
+                pass
+        if (
+            self._notification_destination_reconcile_task
+            and not self._notification_destination_reconcile_task.done()
+            and self._notification_destination_reconcile_task is not asyncio.current_task()
+        ):
+            self._notification_destination_reconcile_task.cancel()
+            try:
+                await self._notification_destination_reconcile_task
             except asyncio.CancelledError:
                 pass
         if self._sse_task and not self._sse_task.done():
@@ -345,10 +367,23 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 CONF_USER_ID,
             )
             from homeassistant.components.mobile_app.util import get_notify_service
+            from homeassistant.util import slugify
         except (ImportError, ModuleNotFoundError):
             return []
         discovered = []
         available_services = set(services) if isinstance(services, dict) else set()
+        fallback_candidates = {}
+        for entry in entries:
+            data = getattr(entry, "data", None)
+            if not isinstance(data, dict):
+                continue
+            device_name = data.get(ATTR_DEVICE_NAME)
+            if not isinstance(device_name, str) or not device_name:
+                continue
+            canonical_name = slugify(device_name)
+            if isinstance(canonical_name, str) and canonical_name:
+                service_name = f"mobile_app_{canonical_name}"
+                fallback_candidates.setdefault(service_name, []).append(entry)
         for entry in entries:
             data = getattr(entry, "data", None)
             if not isinstance(data, dict):
@@ -359,9 +394,31 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 continue
             # HA's mobile_app helper maps its private registration key to a service;
             # that key remains local and is never reported to GluMizan.
-            service_name = get_notify_service(self.hass, webhook_id)
-            if not isinstance(service_name, str) or service_name not in available_services:
-                continue
+            try:
+                service_name = get_notify_service(self.hass, webhook_id)
+            except (AttributeError, KeyError, TypeError):
+                service_name = None
+            if (
+                not isinstance(service_name, str)
+                or service_name not in available_services
+                or _MOBILE_APP_NOTIFY_SERVICE_PATTERN.fullmatch(service_name) is None
+            ):
+                device_name = data.get(ATTR_DEVICE_NAME)
+                canonical_name = slugify(device_name) if isinstance(device_name, str) else None
+                service_name = (
+                    f"mobile_app_{canonical_name}"
+                    if isinstance(canonical_name, str) and canonical_name
+                    else None
+                )
+                if (
+                    not isinstance(service_name, str)
+                    or service_name not in available_services
+                    or _MOBILE_APP_NOTIFY_SERVICE_PATTERN.fullmatch(service_name) is None
+                ):
+                    continue
+                if len(fallback_candidates.get(service_name, [])) != 1:
+                    _LOGGER.warning("GluMizan skipped an ambiguous mobile notification service")
+                    continue
             identifier = f"notify.{service_name}"
             if not re.fullmatch(r"notify\.mobile_app_[A-Za-z0-9_]+", identifier):
                 continue
@@ -468,6 +525,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("GluMizan notification destination report failed", exc_info=True)
 
     async def async_report_notification_destinations_when_ready(self):
+        self._async_listen_for_notification_destination_service_changes()
         if self._notification_destinations_reported or self._notification_destination_report_task or self._unsub_notification_destination_startup:
             return
         if self.hass.state is CoreState.running:
@@ -487,6 +545,45 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         self._unsub_notification_destination_startup = self.hass.bus.async_listen_once(
             EVENT_HOMEASSISTANT_STARTED, _async_report_after_hass_started
         )
+
+    def _async_listen_for_notification_destination_service_changes(self):
+        if self._unsub_notification_destination_services:
+            return
+        listen = getattr(self.hass.bus, "async_listen", None)
+        if not callable(listen):
+            return
+
+        @callback
+        def _async_handle_notification_service_change(event):
+            data = getattr(event, "data", None)
+            if not isinstance(data, dict) or data.get("domain") != "notify":
+                return
+            service_name = data.get("service")
+            if (
+                not isinstance(service_name, str)
+                or _MOBILE_APP_NOTIFY_SERVICE_PATTERN.fullmatch(service_name) is None
+            ):
+                return
+            if (
+                self._notification_destination_reconcile_task
+                and not self._notification_destination_reconcile_task.done()
+            ):
+                return
+            self._notification_destination_reconcile_task = self.hass.async_create_task(
+                self._async_reconcile_notification_destinations_after_service_change()
+            )
+
+        self._unsub_notification_destination_services = [
+            listen(EVENT_SERVICE_REGISTERED, _async_handle_notification_service_change),
+            listen(EVENT_SERVICE_REMOVED, _async_handle_notification_service_change),
+        ]
+
+    async def _async_reconcile_notification_destinations_after_service_change(self):
+        try:
+            await asyncio.sleep(0)
+            await self.async_report_notification_destinations_if_changed()
+        finally:
+            self._notification_destination_reconcile_task = None
 
     async def _async_report_notification_destinations_after_start(self):
         self._notification_destinations_reported = True
