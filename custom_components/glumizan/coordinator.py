@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 import uuid
+from collections.abc import Mapping
 from datetime import timedelta
 import aiohttp
 try:
@@ -375,7 +376,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         fallback_candidates = {}
         for entry in entries:
             data = getattr(entry, "data", None)
-            if not isinstance(data, dict):
+            if not isinstance(data, Mapping):
                 continue
             device_name = data.get(ATTR_DEVICE_NAME)
             if not isinstance(device_name, str) or not device_name:
@@ -386,7 +387,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 fallback_candidates.setdefault(service_name, []).append(entry)
         for entry in entries:
             data = getattr(entry, "data", None)
-            if not isinstance(data, dict):
+            if not isinstance(data, Mapping):
                 continue
             user_id = data.get(CONF_USER_ID)
             webhook_id = data.get(CONF_WEBHOOK_ID)
