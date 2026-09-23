@@ -1,0 +1,31 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "ربط جلوميزان",
+        "data": {
+          "base_url": "رابط واجهة جلوميزان البرمجية",
+          "callback_secret": "سر اقتران جلوميزان"
+        }
+      },
+      "reconfigure": {
+        "title": "إعادة اقتران جلوميزان",
+        "description": "الصق سر الاقتران من حساب جلوميزان ← Home Assistant. ستبقى الأجهزة والكيانات الحالية. لا تضف تكامل جلوميزان ثانياً.",
+        "data": {
+          "base_url": "رابط واجهة جلوميزان البرمجية",
+          "callback_secret": "سر اقتران جلوميزان الجديد"
+        }
+      }
+    },
+    "error": {
+      "https_required": "استخدم رابط جلوميزان عبر HTTPS",
+      "invalid_secret": "رفض جلوميزان سر الاقتران",
+      "cannot_connect": "تعذر الوصول إلى جلوميزان",
+      "integration_disabled": "تكامل جلوميزان مع Home Assistant معطل حالياً"
+    },
+    "abort": {
+      "already_configured": "جلوميزان مضبوط بالفعل",
+      "reconfigure_successful": "تم تحديث اقتران جلوميزان"
+    }
+  }
+}

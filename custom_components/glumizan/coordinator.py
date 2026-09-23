@@ -14,7 +14,7 @@ try:
         EVENT_SERVICE_REMOVED,
     )
     from homeassistant.core import CoreState, callback
-except ModuleNotFoundError:  # lightweight contract-test stubs omit HA core
+except ImportError:  # lightweight contract-test stubs omit HA core
     EVENT_HOMEASSISTANT_STARTED = "homeassistant_started"
     EVENT_SERVICE_REGISTERED = "service_registered"
     EVENT_SERVICE_REMOVED = "service_removed"
@@ -610,6 +610,74 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         except Exception:
             _LOGGER.warning("GluMizan Home Assistant identity claim failed", exc_info=True)
             return False
+
+    async def async_get_pending_account_link(self, request_id):
+        if not re_full_uuid(request_id):
+            return {"status": "not_found"}
+        try:
+            async with self._session.get(
+                f"{self._base_url()}/v1/integrations/home-assistant/identity-links/{request_id}",
+                headers=self._headers(),
+            ) as response:
+                if response.status == 404:
+                    return {"status": "not_found"}
+                if response.status == 410:
+                    return {"status": "expired"}
+                if response.status >= 500:
+                    return {"status": "unavailable"}
+                if response.status >= 300:
+                    return {"status": "failed"}
+                payload = await response.json()
+        except Exception:
+            _LOGGER.warning("GluMizan account-link lookup failed", exc_info=True)
+            return {"status": "unavailable"}
+        if not isinstance(payload, dict) or payload.get("status") != "PENDING" or not isinstance(payload.get("expiresAt"), str):
+            return {"status": "failed"}
+        return {"status": "PENDING", "expiresAt": payload["expiresAt"]}
+
+    async def async_complete_pending_account_link(self, request_id, ha_user_id):
+        if not re_full_uuid(request_id) or not isinstance(ha_user_id, str) or not ha_user_id:
+            return {"status": "failed"}
+        try:
+            async with self._session.post(
+                f"{self._base_url()}/v1/integrations/home-assistant/identity-links/{request_id}/complete",
+                headers=self._headers(),
+                json={"haUserId": ha_user_id},
+            ) as response:
+                if response.status == 404:
+                    return {"status": "not_found"}
+                if response.status == 410:
+                    return {"status": "expired"}
+                if response.status >= 500:
+                    return {"status": "unavailable"}
+                if response.status >= 300:
+                    return {"status": "failed"}
+        except Exception:
+            _LOGGER.warning("GluMizan account-link completion failed", exc_info=True)
+            return {"status": "unavailable"}
+        return {"status": "LINKED"}
+
+    async def async_cancel_pending_account_link(self, request_id):
+        if not re_full_uuid(request_id):
+            return {"status": "not_found"}
+        try:
+            async with self._session.post(
+                f"{self._base_url()}/v1/integrations/home-assistant/identity-links/{request_id}/cancel",
+                headers=self._headers(),
+                json={},
+            ) as response:
+                if response.status == 404:
+                    return {"status": "not_found"}
+                if response.status == 410:
+                    return {"status": "expired"}
+                if response.status >= 500:
+                    return {"status": "unavailable"}
+                if response.status >= 300:
+                    return {"status": "failed"}
+        except Exception:
+            _LOGGER.warning("GluMizan account-link cancellation failed", exc_info=True)
+            return {"status": "unavailable"}
+        return {"status": "CANCELLED"}
 
     def _fire_alert_events(self, alias, previous_alerts, current_alerts):
         prev_ids = {a.get("id") for a in previous_alerts if isinstance(a, dict)}

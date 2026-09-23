@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.components.http import HomeAssistantView
@@ -8,6 +9,8 @@ from aiohttp import web
 from .const import DOMAIN, PLATFORMS
 from .coordinator import GluMizanCoordinator
 from .pairing import migrate_options_into_data
+
+_LOGGER = logging.getLogger(__name__)
 
 VIEW_REGISTERED_KEY = "_glumizan_event_view_registered"
 CLAIM_SERVICE_REGISTERED_KEY = "_glumizan_identity_claim_service_registered"
@@ -21,6 +24,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not hass.data.get(VIEW_REGISTERED_KEY):
         hass.http.register_view(GluMizanEventView())
         hass.data[VIEW_REGISTERED_KEY] = True
+    await _async_register_account_link_infrastructure(hass)
     _register_identity_claim_service(hass)
     try:
         await coordinator.async_config_entry_first_refresh()
@@ -41,10 +45,27 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = hass.data[DOMAIN].pop(entry.entry_id)
     await coordinator.async_close()
     if not hass.data[DOMAIN]:
+        _async_remove_account_link_panel(hass)
         hass.data.pop(VIEW_REGISTERED_KEY, None)
         if hass.data.pop(CLAIM_SERVICE_REGISTERED_KEY, None):
             hass.services.async_remove(DOMAIN, CLAIM_SERVICE)
     return unloaded
+
+
+async def _async_register_account_link_infrastructure(hass):
+    try:
+        from .account_link import async_register_account_link_infrastructure
+        await async_register_account_link_infrastructure(hass)
+    except Exception:
+        _LOGGER.warning("GluMizan account-link panel registration failed", exc_info=True)
+
+
+def _async_remove_account_link_panel(hass):
+    try:
+        from .account_link import async_remove_account_link_panel
+        async_remove_account_link_panel(hass)
+    except Exception:
+        _LOGGER.warning("GluMizan account-link panel removal failed", exc_info=True)
 
 
 def _register_identity_claim_service(hass):
