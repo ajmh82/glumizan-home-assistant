@@ -1,0 +1,11 @@
+connect_home_assistant_account:
+  name: Connect Home Assistant account
+  description: Connect the signed-in Home Assistant user to GluMizan using a claim code.
+  fields:
+    claim_code:
+      name: Claim code
+      description: The GluMizan claim code used to connect this Home Assistant account.
+      required: true
+      example: "ABC123"
+      selector:
+        text:

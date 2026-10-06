@@ -1,6 +1,7 @@
 {
   "domain": "glumizan",
   "name": "GluMizan",
+  "after_dependencies": ["mobile_app"],
   "codeowners": ["@ajmh82"],
   "config_flow": true,
   "dependencies": ["http"],
