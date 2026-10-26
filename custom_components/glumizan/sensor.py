@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -12,6 +13,23 @@ from .presentation import last_reading_time, nightscout_direction, trend_present
 
 
 _CAREGIVER_ENTITY_ID = re.compile(rf"^{DOMAIN}_[^_]+_[0-9a-f]{{8}}-[0-9a-f-]{{27,}}_.+$", re.IGNORECASE)
+
+
+def _glucose_is_current(data):
+    """Fail closed when CGM freshness or measurement timestamp is untrusted."""
+    if not isinstance(data, dict) or data.get("freshness") != "FRESH":
+        return False
+    measured_at = data.get("measuredAt")
+    if not isinstance(measured_at, str):
+        return False
+    try:
+        measured = datetime.fromisoformat(measured_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if measured.tzinfo is None:
+        return False
+    age_seconds = (datetime.now(timezone.utc) - measured).total_seconds()
+    return -60 <= age_seconds <= 15 * 60
 
 
 def cleanup_stale_caregiver_entities(hass, entry, expected_unique_ids, suffix):
@@ -121,9 +139,13 @@ class GluMizanGlucoseSensor(GluMizanPatientEntity, SensorEntity):
     def __init__(self, coordinator, alias):
         super().__init__(coordinator, alias); self._attr_unique_id = f"{DOMAIN}_{alias}_glucose"; self._attr_name = "Glucose"
     @property
-    def available(self): return self.sensitive_data_available
+    def available(self):
+        return self.sensitive_data_available and _glucose_is_current(self.coordinator.data[self.alias])
+
     @property
-    def native_value(self): return self.coordinator.data[self.alias].get("value")
+    def native_value(self):
+        data = self.coordinator.data[self.alias]
+        return data.get("value") if _glucose_is_current(data) else None
     @property
     def extra_state_attributes(self):
         value = self.coordinator.data[self.alias]
