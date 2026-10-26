@@ -12,11 +12,12 @@ A Home Assistant bearer token is kept only in the GluMizan runtime. Do not enter
 
 ## Install with HACS
 
-1. In HACS, add the future dedicated GluMizan integration repository as an **Integration** custom repository.
-2. Download **GluMizan** from HACS.
-3. Restart Home Assistant.
-4. Go to **Settings -> Devices & services -> Add Integration** and select **GluMizan**.
-5. Complete the configuration form.
+1. In HACS, add `https://github.com/ajmh82/glumizan-home-assistant` as a **Custom repository** of type **Integration** if it is not already added.
+2. Open **GluMizan** in HACS and download the latest published **GitHub Release** (do not select an unreviewed development branch).
+3. Restart Home Assistant after installation.
+4. For a first-time installation, go to **Settings → Devices & services → Add Integration** and select **GluMizan**, then complete the configuration form.
+
+**Existing installations:** Do not delete the integration, re-pair it, or add a second config entry. After the new GitHub Release has been published, update the existing GluMizan integration through HACS and restart Home Assistant. A GitHub pull request or tag alone is not a published HACS release.
 
 ## Manual installation
 
