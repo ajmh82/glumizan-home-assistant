@@ -97,10 +97,14 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         self.patient_data = {}
         self._delivery_store = Store(hass, _DELIVERY_DEDUP_VERSION, f"{DOMAIN}.{entry.entry_id}.deliveries")
         self._processed_delivery_ids = set()
+        self._delivery_repeat_progress = {}
         self._delivery_dedup_loaded = False
         self._fired_opened_episode_ids = set()
         self._fired_alert_transition_keys = set()
         self._sse_task = None
+        self._sse_connected = False
+        self._sse_refresh_task = None
+        self._sse_refresh_pending = False
         self._sse_reconnect_delay = SSE_RECONNECT_BASE_SECONDS
         self._care_event_sequence = 0
         self._care_event_sequence_by_key = {}
@@ -145,20 +149,34 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 await self._sse_task
             except asyncio.CancelledError:
                 pass
+        self._sse_refresh_pending = False
+        if self._sse_refresh_task and not self._sse_refresh_task.done():
+            self._sse_refresh_task.cancel()
+            try:
+                await self._sse_refresh_task
+            except asyncio.CancelledError:
+                pass
         await self._session.close()
 
     def _snapshot(self):
         return {alias: dict(value) for alias, value in self.patient_data.items()}
 
     def _update_poll_interval(self):
-        active = any(
-            data.get("active_episode_ids") or data.get("active_alerts") or any(
+        critical = any(
+            data.get("active_episode_ids") or data.get("active_alerts")
+            for data in self.patient_data.values()
+        )
+        active_presence = any(
+            any(
                 caregiver.get("care_state") == "WITH_PATIENT" or caregiver.get("active_presence_session_id")
                 for caregiver in data.get("caregivers", []) if isinstance(caregiver, dict)
             )
             for data in self.patient_data.values()
         )
-        interval = _ACTIVE_UPDATE_INTERVAL if active else _IDLE_UPDATE_INTERVAL
+        # Never relax the fast fallback for an active medical/emergency episode.
+        # Caregiver presence alone can use normal backup polling while SSE is live.
+        fast_fallback = critical or (active_presence and not self._sse_connected)
+        interval = _ACTIVE_UPDATE_INTERVAL if fast_fallback else _IDLE_UPDATE_INTERVAL
         if getattr(self, "update_interval", None) != interval:
             self.update_interval = interval
 
@@ -181,6 +199,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         event_ids = []
         new_aliases = []
         received_aliases = set()
+        refreshed_aliases = set()
         for event in events:
             alias = event["patientAlias"]
             received_aliases.add(alias)
@@ -191,6 +210,8 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             prev_caregivers = list(prev.get("caregivers", []))
             current = self.patient_data.setdefault(alias, {"alias": alias, "glucose": None, "trend": None, "freshness": "UNKNOWN", "episode": None, "active_alerts": [], "caregivers": []})
             payload = event.get("payload", {})
+            if payload.get("exposureMode") in {"PRIVATE", "SHARED"}:
+                current["exposure_mode"] = payload["exposureMode"]
             glucose = payload.get("glucose")
             if glucose:
                 current.update(glucose)
@@ -208,7 +229,9 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 set_active_episode_ids(current, [alert.get("id") for alert in current["active_alerts"] if isinstance(alert, dict)])
             if isinstance(event["id"], str) and len(event["id"]) == 36:
                 event_ids.append(event["id"])
-            await self.async_refresh_presence_context(alias)
+            if alias not in refreshed_aliases:
+                await self.async_refresh_presence_context(alias)
+                refreshed_aliases.add(alias)
             new_alerts = current.get("active_alerts", [])
             self._fire_alert_events(alias, prev_alerts, new_alerts)
             self._fire_care_events(alias, prev_caregivers, current.get("caregivers", []))
@@ -237,13 +260,26 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         saved = await self._delivery_store.async_load()
         if isinstance(saved, list):
             self._processed_delivery_ids = {item for item in saved if isinstance(item, str)}
+        elif isinstance(saved, dict):
+            self._processed_delivery_ids = {item for item in saved.get("processed", []) if isinstance(item, str)}
+            self._delivery_repeat_progress = {
+                item: count for item, count in saved.get("repeat_progress", {}).items()
+                if isinstance(item, str) and isinstance(count, int) and count > 0
+            }
         self._delivery_dedup_loaded = True
 
     async def _async_record_delivery(self, delivery_id):
         self._processed_delivery_ids.add(delivery_id)
+        self._delivery_repeat_progress.pop(delivery_id, None)
         if len(self._processed_delivery_ids) > _DELIVERY_DEDUP_LIMIT:
             self._processed_delivery_ids = set(sorted(self._processed_delivery_ids)[-_DELIVERY_DEDUP_LIMIT:])
-        await self._delivery_store.async_save(sorted(self._processed_delivery_ids))
+        await self._delivery_store.async_save({"processed": sorted(self._processed_delivery_ids), "repeat_progress": self._delivery_repeat_progress})
+
+    async def _async_record_repeat_progress(self, delivery_id, completed_repeats):
+        if not isinstance(delivery_id, str) or not isinstance(completed_repeats, int) or completed_repeats < 1:
+            return
+        self._delivery_repeat_progress[delivery_id] = completed_repeats
+        await self._delivery_store.async_save({"processed": sorted(self._processed_delivery_ids), "repeat_progress": self._delivery_repeat_progress})
 
     async def async_receive_delivery_events(self, deliveries):
         await self._async_load_delivery_dedup()
@@ -279,15 +315,18 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 "route_key": delivery.get("route_key"),
                 "notification_target": delivery.get("notification_target"),
                 "notification_platform": delivery.get("notification_platform"),
+                "title": delivery.get("title"),
                 "message_ar": delivery.get("message_ar"),
                 "message_en": delivery.get("message_en"),
+                "delivery_mode": delivery.get("delivery_mode"),
+                "repeat_count": delivery.get("repeat_count"),
                 "is_test": is_test,
                 "created_at": delivery.get("created_at"),
             }
             if isinstance(delivery.get("glucose"), dict):
                 event_data["glucose"] = delivery["glucose"]
             if self._is_direct_mobile_delivery(event_data):
-                if not await self._async_send_direct_mobile_notification(event_data):
+                if not await self._async_send_direct_mobile_notification(event_data, self._delivery_repeat_progress.get(delivery_id, 0)):
                     continue
             try:
                 await self._async_record_delivery(delivery_id)
@@ -440,7 +479,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         target = delivery.get("notification_target")
         return isinstance(target, str) and re.fullmatch(r"notify\.mobile_app_[A-Za-z0-9_]+", target) is not None
 
-    async def _async_send_direct_mobile_notification(self, delivery):
+    async def _async_send_direct_mobile_notification(self, delivery, completed_repeats=0):
         target = delivery.get("notification_target")
         if not isinstance(target, str):
             return False
@@ -452,7 +491,7 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         if not isinstance(services, dict) or service_name not in services:
             _LOGGER.warning("GluMizan mobile notification service is unavailable")
             return False
-        message = delivery.get("message_ar") or delivery.get("message_en")
+        message = delivery.get("message_en") or delivery.get("message_ar")
         if not isinstance(message, str) or not message:
             _LOGGER.warning("GluMizan mobile notification has no message")
             return False
@@ -460,12 +499,46 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         if not isinstance(title, str) or not title.strip():
             title = _DIRECT_MOBILE_NOTIFICATION_TITLE
         payload = {"title": title.strip(), "message": message}
+        normal_delivery = delivery.get("delivery_mode") == "NORMAL"
+        repeat_count = delivery.get("repeat_count", 1)
+        if not isinstance(repeat_count, int) or repeat_count < 1 or repeat_count > 10:
+            repeat_count = 1
+        if not isinstance(completed_repeats, int) or completed_repeats < 0:
+            completed_repeats = 0
+        completed_repeats = min(completed_repeats, repeat_count)
+        delivery_id = delivery.get("delivery_id")
+
+        async def record_repeat(index):
+            try:
+                await self._async_record_repeat_progress(delivery_id, index + 1)
+                return True
+            except Exception:
+                _LOGGER.warning("GluMizan mobile notification progress could not be persisted", exc_info=True)
+                return False
         platform = str(delivery.get("notification_platform") or "").lower()
+        if normal_delivery:
+            try:
+                await self.hass.services.async_call("notify", service_name, payload, blocking=True)
+            except Exception:
+                _LOGGER.warning("GluMizan direct mobile notification failed", exc_info=True)
+                return False
+            return True
         if platform in {"ios", "iphone", "ipad"}:
             payload["data"] = {
                 "priority": "high",
                 "push": {"sound": {"name": "default", "critical": 1, "volume": 1}},
             }
+            for index in range(completed_repeats, repeat_count):
+                try:
+                    await self.hass.services.async_call("notify", service_name, payload, blocking=True)
+                except Exception:
+                    _LOGGER.warning("GluMizan direct mobile notification failed", exc_info=True)
+                    return False
+                if not await record_repeat(index):
+                    return False
+                if index + 1 < repeat_count:
+                    await asyncio.sleep(3)
+            return True
         elif platform == "android":
             try:
                 await self.hass.services.async_call(
@@ -478,10 +551,20 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 _LOGGER.warning("GluMizan Android ringer-normal command failed", exc_info=True)
             await asyncio.sleep(1)
             payload["data"] = {"ttl": 0, "priority": "high", "channel": "alarm_stream"}
-            main_delivery_succeeded = False
+            main_delivery_succeeded = True
             try:
-                await self.hass.services.async_call("notify", service_name, payload, blocking=True)
-                main_delivery_succeeded = True
+                for index in range(completed_repeats, repeat_count):
+                    try:
+                        await self.hass.services.async_call("notify", service_name, payload, blocking=True)
+                    except Exception:
+                        _LOGGER.warning("GluMizan direct mobile notification failed", exc_info=True)
+                        main_delivery_succeeded = False
+                        break
+                    if not await record_repeat(index):
+                        main_delivery_succeeded = False
+                        break
+                    if index + 1 < repeat_count:
+                        await asyncio.sleep(3)
             except Exception:
                 _LOGGER.warning("GluMizan direct mobile notification failed", exc_info=True)
             finally:
@@ -610,6 +693,25 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         except Exception:
             _LOGGER.warning("GluMizan Home Assistant identity claim failed", exc_info=True)
             return False
+
+    async def async_get_shared_viewer_context(self, ha_user_id):
+        if not isinstance(ha_user_id, str) or not ha_user_id:
+            return {"exposureMode": None, "patients": []}
+        try:
+            async with self._session.post(
+                f"{self._base_url()}/v1/integrations/home-assistant/shared-viewer-context",
+                headers=self._headers(),
+                json={"haUserId": ha_user_id},
+            ) as response:
+                if response.status >= 300:
+                    return {"exposureMode": None, "patients": []}
+                payload = await response.json()
+        except Exception:
+            _LOGGER.warning("GluMizan shared viewer context failed", exc_info=True)
+            return {"exposureMode": None, "patients": []}
+        if not isinstance(payload, dict) or not isinstance(payload.get("patients"), list):
+            return {"exposureMode": None, "patients": []}
+        return payload
 
     async def async_get_pending_account_link(self, request_id):
         if not re_full_uuid(request_id):
@@ -826,10 +928,8 @@ class GluMizanCoordinator(DataUpdateCoordinator):
         }
         care_sequence_before = self._care_event_sequence
 
+        # The events refresh already fetches presence once for each patient.
         await self.async_request_refresh()
-
-        for alias in list(self.patient_data):
-            await self.async_refresh_presence_context(alias)
 
         for alias, current in self.patient_data.items():
             self._fire_care_events(
@@ -847,6 +947,26 @@ class GluMizanCoordinator(DataUpdateCoordinator):
                 signal_patients_changed(self.entry.entry_id),
                 list(self.patient_data),
             )
+
+    def _queue_realtime_invalidation(self):
+        self._sse_refresh_pending = True
+        if not self._sse_refresh_task or self._sse_refresh_task.done():
+            self._sse_refresh_task = self.hass.async_create_task(
+                self._async_drain_realtime_invalidations()
+            )
+
+    async def _async_drain_realtime_invalidations(self):
+        try:
+            while self._sse_refresh_pending:
+                self._sse_refresh_pending = False
+                try:
+                    await self._async_handle_realtime_invalidation()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    _LOGGER.warning("GluMizan real-time refresh failed", exc_info=True)
+        finally:
+            self._sse_refresh_task = None
 
     def start_sse_listener(self):
         if self._sse_task and not self._sse_task.done():
@@ -875,27 +995,33 @@ class GluMizanCoordinator(DataUpdateCoordinator):
             if response.status >= 300:
                 _LOGGER.warning("GluMizan SSE rejected with status %s", response.status)
                 raise UpdateFailed(f"SSE rejected {response.status}")
-            buffer = ""
-            async for chunk in response.content.iter_any():
-                buffer += chunk.decode("utf-8", errors="replace")
-                while "\n\n" in buffer:
-                    event_block, buffer = buffer.split("\n\n", 1)
-                    event_type = None
-                    data_lines = []
-                    for line in event_block.split("\n"):
-                        if line.startswith("event: "):
-                            event_type = line[7:].strip()
-                        elif line.startswith("data: "):
-                            data_lines.append(line[6:])
-                        elif line.startswith(":"):
-                            continue
-                    if event_type == "state.changed" and data_lines:
-                        try:
-                            import json
-                            signal = json.loads(data_lines[0])
-                            if isinstance(signal, dict) and signal.get("patientId"):
-                                self.hass.async_create_task(
-                                    self._async_handle_realtime_invalidation()
-                                )
-                        except Exception:
-                            pass
+            self._sse_connected = True
+            self._update_poll_interval()
+            try:
+                # Reconcile on each reconnect: SSE notifications are not durable.
+                await self._async_handle_realtime_invalidation()
+                buffer = ""
+                async for chunk in response.content.iter_any():
+                    buffer += chunk.decode("utf-8", errors="replace")
+                    while "\n\n" in buffer:
+                        event_block, buffer = buffer.split("\n\n", 1)
+                        event_type = None
+                        data_lines = []
+                        for line in event_block.split("\n"):
+                            if line.startswith("event: "):
+                                event_type = line[7:].strip()
+                            elif line.startswith("data: "):
+                                data_lines.append(line[6:])
+                            elif line.startswith(":"):
+                                continue
+                        if event_type == "state.changed" and data_lines:
+                            try:
+                                import json
+                                signal = json.loads(data_lines[0])
+                                if isinstance(signal, dict) and signal.get("patientId"):
+                                    self._queue_realtime_invalidation()
+                            except (ValueError, TypeError):
+                                pass
+            finally:
+                self._sse_connected = False
+                self._update_poll_interval()

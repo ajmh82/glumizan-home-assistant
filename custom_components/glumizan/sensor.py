@@ -109,6 +109,10 @@ class GluMizanPatientEntity(CoordinatorEntity):
     def available(self):
         return super().available and self.alias in self.coordinator.data
 
+    @property
+    def sensitive_data_available(self):
+        return super().available and self.alias in self.coordinator.data and self.coordinator.data[self.alias].get("exposure_mode") != "SHARED"
+
 
 class GluMizanGlucoseSensor(GluMizanPatientEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.BLOOD_GLUCOSE_CONCENTRATION
@@ -116,6 +120,8 @@ class GluMizanGlucoseSensor(GluMizanPatientEntity, SensorEntity):
     _attr_native_unit_of_measurement = "mg/dL"
     def __init__(self, coordinator, alias):
         super().__init__(coordinator, alias); self._attr_unique_id = f"{DOMAIN}_{alias}_glucose"; self._attr_name = "Glucose"
+    @property
+    def available(self): return self.sensitive_data_available
     @property
     def native_value(self): return self.coordinator.data[self.alias].get("value")
     @property
@@ -134,6 +140,8 @@ class GluMizanPatientStatusSensor(GluMizanPatientEntity, SensorEntity):
 
     def __init__(self, coordinator, alias):
         super().__init__(coordinator, alias); self._attr_unique_id = f"{DOMAIN}_{alias}_patient_status"; self._attr_name = "Patient Care Status"
+    @property
+    def available(self): return self.sensitive_data_available
 
     @property
     def native_value(self):
@@ -177,7 +185,7 @@ class GluMizanCaregiverSensor(GluMizanPatientEntity, SensorEntity):
 
     @property
     def available(self):
-        return super().available and self.caregiver is not None
+        return self.sensitive_data_available and self.caregiver is not None
 
     @property
     def native_value(self):
@@ -203,6 +211,9 @@ class GluMizanActiveAlertSensor(GluMizanPatientEntity, SensorEntity):
         super().__init__(coordinator, alias)
         self._attr_unique_id = f"{DOMAIN}_{alias}_active_alert"
         self._attr_name = "Active Alerts"
+
+    @property
+    def available(self): return self.sensitive_data_available
 
     @property
     def native_value(self):

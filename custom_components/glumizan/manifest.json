@@ -1,7 +1,6 @@
 {
   "domain": "glumizan",
   "name": "GluMizan",
-  "after_dependencies": ["mobile_app"],
   "codeowners": ["@ajmh82"],
   "config_flow": true,
   "dependencies": ["http"],
@@ -10,5 +9,5 @@
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/ajmh82/glumizan-home-assistant/issues",
   "requirements": [],
-  "version": "1.4.0"
+  "version": "1.4.3"
 }
