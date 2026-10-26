@@ -5,7 +5,7 @@ import logging
 import re
 import uuid
 from collections.abc import Mapping
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import aiohttp
 try:
     from homeassistant.const import (
@@ -44,6 +44,8 @@ _DELIVERY_DEDUP_VERSION = 1
 _DELIVERY_DEDUP_LIMIT = 512
 _IDLE_UPDATE_INTERVAL = timedelta(seconds=30)
 _ACTIVE_UPDATE_INTERVAL = timedelta(seconds=2)
+_TECHNICAL_MONITORING_ALERT_CATEGORIES = frozenset({"NO_RECENT_READING", "SYNC_FAILURE"})
+_TECHNICAL_ALERT_FAST_GRACE = timedelta(minutes=30)
 _NOTIFICATION_DESTINATION_LIMIT = 200
 _DIRECT_MOBILE_NOTIFICATION_TITLE = "GluMizan Alert"
 _MOBILE_APP_NOTIFY_SERVICE_PATTERN = re.compile(r"mobile_app_[A-Za-z0-9_]+")
@@ -88,6 +90,37 @@ def set_active_episode_ids(current, episode_ids):
     normalized = normalize_episode_ids(episode_ids)
     current["active_episode_ids"] = normalized
     current["episode_id"] = normalized[0] if len(normalized) == 1 else None
+
+
+def _only_long_lived_technical_alerts(data, now=None):
+    """Never relax fast polling for unknown, new, or ambiguously identified alerts."""
+    if not isinstance(data, dict):
+        return False
+    active_ids = normalize_episode_ids(data.get("active_episode_ids"))
+    alerts = data.get("active_alerts")
+    if not active_ids or not isinstance(alerts, list) or len(alerts) != len(active_ids):
+        return False
+    now = now or datetime.now(timezone.utc)
+    seen = set()
+    for alert in alerts:
+        if not isinstance(alert, dict):
+            return False
+        episode_id = alert.get("id")
+        if not isinstance(episode_id, str) or episode_id not in active_ids or episode_id in seen:
+            return False
+        if alert.get("category") not in _TECHNICAL_MONITORING_ALERT_CATEGORIES:
+            return False
+        detected_at = alert.get("firstDetectedAt")
+        if not isinstance(detected_at, str):
+            return False
+        try:
+            first_seen = datetime.fromisoformat(detected_at.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if first_seen.tzinfo is None or now - first_seen < _TECHNICAL_ALERT_FAST_GRACE:
+            return False
+        seen.add(episode_id)
+    return seen == set(active_ids)
 
 
 class GluMizanCoordinator(DataUpdateCoordinator):
@@ -163,7 +196,8 @@ class GluMizanCoordinator(DataUpdateCoordinator):
 
     def _update_poll_interval(self):
         critical = any(
-            data.get("active_episode_ids") or data.get("active_alerts")
+            (data.get("active_episode_ids") or data.get("active_alerts"))
+            and not (self._sse_connected and _only_long_lived_technical_alerts(data))
             for data in self.patient_data.values()
         )
         active_presence = any(
