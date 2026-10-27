@@ -1,0 +1,78 @@
+name: Release GluMizan v1.4.3
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  safety:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm version and public release manifest
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('custom_components/glumizan/manifest.json').read_text())
+          assert manifest['version'] == '1.4.3', 'Refusing non-v1.4.3 release'
+          assert manifest['domain'] == 'glumizan'
+          assert Path('RELEASE_NOTES_V143.md').is_file()
+          PY
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Syntax and all polling/SSE safety tests
+        run: |
+          python -m compileall -q custom_components/glumizan
+          python -m unittest discover -s tests -p 'test_*.py' -v
+
+  hassfest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration
+          ignore: brands license
+
+  publish:
+    needs: [safety, hassfest, hacs]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish official HACS-compatible GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view 'v1.4.3' >/dev/null 2>&1; then
+            echo 'Release v1.4.3 already exists; preserving existing release.'
+            exit 0
+          fi
+          if git ls-remote --exit-code --tags origin refs/tags/v1.4.3 >/dev/null 2>&1; then
+            echo 'Tag v1.4.3 exists without a release; refusing to overwrite.' >&2
+            exit 1
+          fi
+          gh release create 'v1.4.3' --target "$GITHUB_SHA" --title 'GluMizan Home Assistant v1.4.3' --notes-file 'RELEASE_NOTES_V143.md'
+          gh release view 'v1.4.3' --json isDraft,isPrerelease,tagName,url --jq '{tag: .tagName, draft: .isDraft, prerelease: .isPrerelease, url: .url}'

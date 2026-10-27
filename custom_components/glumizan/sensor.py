@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -12,6 +13,23 @@ from .presentation import last_reading_time, nightscout_direction, trend_present
 
 
 _CAREGIVER_ENTITY_ID = re.compile(rf"^{DOMAIN}_[^_]+_[0-9a-f]{{8}}-[0-9a-f-]{{27,}}_.+$", re.IGNORECASE)
+
+
+def _glucose_is_current(data):
+    """Fail closed when CGM freshness or measurement timestamp is untrusted."""
+    if not isinstance(data, dict) or data.get("freshness") != "FRESH":
+        return False
+    measured_at = data.get("measuredAt")
+    if not isinstance(measured_at, str):
+        return False
+    try:
+        measured = datetime.fromisoformat(measured_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if measured.tzinfo is None:
+        return False
+    age_seconds = (datetime.now(timezone.utc) - measured).total_seconds()
+    return -60 <= age_seconds <= 15 * 60
 
 
 def cleanup_stale_caregiver_entities(hass, entry, expected_unique_ids, suffix):
@@ -109,6 +127,10 @@ class GluMizanPatientEntity(CoordinatorEntity):
     def available(self):
         return super().available and self.alias in self.coordinator.data
 
+    @property
+    def sensitive_data_available(self):
+        return super().available and self.alias in self.coordinator.data and self.coordinator.data[self.alias].get("exposure_mode") != "SHARED"
+
 
 class GluMizanGlucoseSensor(GluMizanPatientEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.BLOOD_GLUCOSE_CONCENTRATION
@@ -117,7 +139,13 @@ class GluMizanGlucoseSensor(GluMizanPatientEntity, SensorEntity):
     def __init__(self, coordinator, alias):
         super().__init__(coordinator, alias); self._attr_unique_id = f"{DOMAIN}_{alias}_glucose"; self._attr_name = "Glucose"
     @property
-    def native_value(self): return self.coordinator.data[self.alias].get("value")
+    def available(self):
+        return self.sensitive_data_available and _glucose_is_current(self.coordinator.data[self.alias])
+
+    @property
+    def native_value(self):
+        data = self.coordinator.data[self.alias]
+        return data.get("value") if _glucose_is_current(data) else None
     @property
     def extra_state_attributes(self):
         value = self.coordinator.data[self.alias]
@@ -134,6 +162,8 @@ class GluMizanPatientStatusSensor(GluMizanPatientEntity, SensorEntity):
 
     def __init__(self, coordinator, alias):
         super().__init__(coordinator, alias); self._attr_unique_id = f"{DOMAIN}_{alias}_patient_status"; self._attr_name = "Patient Care Status"
+    @property
+    def available(self): return self.sensitive_data_available
 
     @property
     def native_value(self):
@@ -177,7 +207,7 @@ class GluMizanCaregiverSensor(GluMizanPatientEntity, SensorEntity):
 
     @property
     def available(self):
-        return super().available and self.caregiver is not None
+        return self.sensitive_data_available and self.caregiver is not None
 
     @property
     def native_value(self):
@@ -203,6 +233,9 @@ class GluMizanActiveAlertSensor(GluMizanPatientEntity, SensorEntity):
         super().__init__(coordinator, alias)
         self._attr_unique_id = f"{DOMAIN}_{alias}_active_alert"
         self._attr_name = "Active Alerts"
+
+    @property
+    def available(self): return self.sensitive_data_available
 
     @property
     def native_value(self):

@@ -1,114 +1,20 @@
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const COPY = {
-  ar: {
-    loading: "جارٍ التحقق من طلب الربط…",
-    title: "ربط حساب جلوميزان",
-    pending: "هل تريد ربط حساب جلوميزان بحساب Home Assistant الذي تستخدمه الآن؟",
-    confirm: "تأكيد الربط",
-    cancel: "إلغاء",
-    linked: "تم ربط الحساب بنجاح.",
-    expired: "انتهت صلاحية طلب الربط. ارجع إلى جلوميزان وحاول مرة أخرى.",
-    unavailable: "طلب الربط غير متاح.",
-    empty: "لا يوجد طلب ربط بانتظار التأكيد.",
-  },
-  en: {
-    loading: "Checking the account link request…",
-    title: "Connect GluMizan account",
-    pending: "Connect this GluMizan account to the Home Assistant account you are using now?",
-    confirm: "Confirm",
-    cancel: "Cancel",
-    linked: "Account linked successfully.",
-    expired: "This link request has expired. Return to GluMizan and try again.",
-    unavailable: "This account link request is not available.",
-    empty: "No account link request is awaiting confirmation.",
-  },
+  ar: { loading: "جارٍ التحقق من طلب الربط…", eyebrow: "GLUMIZAN · HOME ASSISTANT", title: "ربط حساب جلوميزان", pending: "سيتم ربط حساب Home Assistant الذي تستخدمه الآن بحسابك في جلوميزان.", security: "يُستخدم حساب Home Assistant المسجّل دخوله حاليًا فقط. لا نطلب أو نعرض أي معرّف للحساب.", confirm: "تأكيد الربط", cancel: "إلغاء", linked: "تم ربط حسابك بنجاح.", linkedDetail: "أصبح Home Assistant جاهزًا لاستخدام إعدادات جلوميزان المصرح بها.", expired: "انتهت صلاحية طلب الربط.", unavailable: "تعذر العثور على طلب الربط.", unavailableDetail: "ربما اكتمل الطلب أو انتهت صلاحيته أو لم يعد متاحًا. ارجع إلى جلوميزان وأنشئ طلب تأكيد جديدًا.", empty: "لم يتم فتح طلب ربط صالح.", emptyDetail: "ارجع إلى جلوميزان وافتح طلب تأكيد جديد من إعدادات Home Assistant.", error: "تعذر إكمال الطلب الآن.", retry: "إعادة المحاولة" },
+  en: { loading: "Checking the account link request…", eyebrow: "GLUMIZAN · HOME ASSISTANT", title: "Connect your GluMizan account", pending: "The Home Assistant account you are using now will be connected to your GluMizan account.", security: "Only the Home Assistant user currently signed in is used. No account ID is requested or shown.", confirm: "Confirm connection", cancel: "Cancel", linked: "Your account is connected.", linkedDetail: "Home Assistant can now use your authorized GluMizan settings.", expired: "This link request has expired.", unavailable: "This link request is not available.", unavailableDetail: "It may already be complete, expired, or no longer available. Return to GluMizan and create a fresh confirmation request.", empty: "No valid link request was opened.", emptyDetail: "Return to GluMizan and open a new confirmation request from Home Assistant settings.", error: "We could not complete the request right now.", retry: "Try again" },
 };
 
+const STYLE = `:host{display:block;color:var(--primary-text-color);font:var(--paper-font-body1_-_font-family,system-ui,sans-serif)}.shell{max-width:600px;margin:clamp(24px,7vh,72px) auto;padding:20px}.card{overflow:hidden;border:1px solid var(--divider-color,#d9e5e2);border-radius:22px;background:var(--card-background-color,#fff);box-shadow:var(--ha-card-box-shadow,0 16px 42px rgba(15,54,47,.12))}.brand{display:flex;align-items:center;gap:12px;padding:22px 24px;color:#f6fffc;background:linear-gradient(135deg,#075d50,#0b8570)}.mark{display:grid;place-items:center;inline-size:38px;block-size:38px;border:1px solid rgba(255,255,255,.38);border-radius:12px;font-weight:800}.eyebrow{margin:0;font-size:.72rem;font-weight:750;letter-spacing:.1em;opacity:.84}.brand-name{margin:2px 0 0;font-size:1.08rem;font-weight:750}.content{padding:clamp(24px,5vw,38px)}.icon{display:grid;place-items:center;inline-size:46px;block-size:46px;margin-block-end:18px;border-radius:50%;background:#e7f6f1;color:#08705d;font-size:1.4rem;font-weight:800}.icon--warning{background:#fff4df;color:#9a6500}.icon--error{background:#feebec;color:#ae2937}h1{margin:0;color:var(--primary-text-color);font-size:clamp(1.45rem,4vw,1.9rem);line-height:1.25}p{margin:12px 0 0;color:var(--secondary-text-color,#536965);line-height:1.65}.security{margin-block-start:22px;padding:13px 14px;border-inline-start:3px solid #16967d;border-radius:10px;background:#e7f6f1;color:var(--primary-text-color);font-size:.92rem}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-block-start:28px}.actions button{min-block-size:44px;padding:0 18px;border-radius:10px;font:inherit;font-weight:700;cursor:pointer}.primary{border:1px solid #08705d;background:#08705d;color:#fff}.secondary{border:1px solid var(--divider-color,#b9ccc7);background:transparent;color:var(--primary-text-color)}.spinner{inline-size:20px;block-size:20px;border:3px solid #cfe8df;border-top-color:#08705d;border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:480px){.shell{margin:12px auto;padding:12px}.brand,.content{padding:20px}.actions button{inline-size:100%}}`;
+
 class GlumizanAccountLinkPanel extends HTMLElement {
-  set hass(value) {
-    this._hass = value;
-    if (!this._started) {
-      this._started = true;
-      this._load();
-    }
-  }
-
-  connectedCallback() {
-    this._render();
-  }
-
-  _language() {
-    return this._hass?.locale?.language?.toLowerCase().startsWith("ar") ? "ar" : "en";
-  }
-
-  _requestId() {
-    const requestId = new URLSearchParams(window.location.search).get("request");
-    return requestId && REQUEST_ID.test(requestId) ? requestId : null;
-  }
-
-  async _load() {
-    this._requestIdValue = this._requestId();
-    if (!this._requestIdValue) {
-      this._state = "empty";
-      this._render();
-      return;
-    }
-    this._state = "loading";
-    this._render();
-    try {
-      const response = await this._hass.callApi("GET", `glumizan/account-link/${this._requestIdValue}`);
-      this._state = response?.status === "PENDING" ? "pending" : "unavailable";
-    } catch (error) {
-      this._state = error?.status === 410 ? "expired" : "unavailable";
-    }
-    this._render();
-  }
-
-  async _submit(action) {
-    if (!this._requestIdValue || !this._hass) return;
-    this._state = "loading";
-    this._render();
-    try {
-      const response = await this._hass.callApi("POST", `glumizan/account-link/${this._requestIdValue}/${action}`, {});
-      this._state = action === "complete" && response?.status === "LINKED" ? "linked"
-        : action === "cancel" && response?.status === "CANCELLED" ? "unavailable"
-          : "unavailable";
-    } catch (error) {
-      this._state = error?.status === 410 ? "expired" : "unavailable";
-    }
-    this._render();
-  }
-
-  _render() {
-    const language = this._language();
-    const copy = COPY[language];
-    const state = this._state || "loading";
-    const root = document.createElement("section");
-    root.dir = language === "ar" ? "rtl" : "ltr";
-    root.style.cssText = "max-width:560px;margin:48px auto;padding:28px;border-radius:12px;background:var(--card-background-color);color:var(--primary-text-color);font:var(--paper-font-body1_-_font-family);box-shadow:var(--ha-card-box-shadow,none);text-align:start;";
-    const title = document.createElement("h1");
-    title.textContent = copy.title;
-    root.append(title);
-    const message = document.createElement("p");
-    message.textContent = copy[state] || copy.unavailable;
-    root.append(message);
-    if (state === "pending") {
-      const actions = document.createElement("div");
-      actions.style.cssText = "display:flex;gap:12px;margin-top:24px;";
-      const confirm = document.createElement("button");
-      confirm.type = "button";
-      confirm.textContent = copy.confirm;
-      confirm.addEventListener("click", () => this._submit("complete"));
-      const cancel = document.createElement("button");
-      cancel.type = "button";
-      cancel.textContent = copy.cancel;
-      cancel.addEventListener("click", () => this._submit("cancel"));
-      actions.append(confirm, cancel);
-      root.append(actions);
-    }
-    this.replaceChildren(root);
-  }
+  set hass(value) { this._hass = value; if (!this._started) { this._started = true; this._load(); } }
+  connectedCallback() { this._render(); }
+  _language() { return this._hass?.locale?.language?.toLowerCase().startsWith("ar") ? "ar" : "en"; }
+  _requestId() { const requestId = new URLSearchParams(window.location.search).get("request"); return requestId && REQUEST_ID.test(requestId) ? requestId : null; }
+  async _load() { this._requestIdValue = this._requestId(); if (!this._requestIdValue) { this._state = "empty"; this._render(); return; } this._state = "loading"; this._render(); try { const response = await this._hass.callApi("GET", `glumizan/account-link/${this._requestIdValue}`); this._state = response?.status === "PENDING" ? "pending" : "unavailable"; } catch (error) { this._state = error?.status === 410 ? "expired" : "error"; } this._render(); }
+  async _submit(action) { if (!this._requestIdValue || !this._hass) return; this._state = "loading"; this._render(); try { const response = await this._hass.callApi("POST", `glumizan/account-link/${this._requestIdValue}/${action}`, {}); this._state = action === "complete" && response?.status === "LINKED" ? "linked" : "unavailable"; } catch (error) { this._state = error?.status === 410 ? "expired" : "error"; } this._render(); }
+  _render() { const language = this._language(); const copy = COPY[language]; const state = this._state || "loading"; const root = document.createElement("section"); root.className = "shell"; root.dir = language === "ar" ? "rtl" : "ltr"; root.lang = language; const card = document.createElement("article"); card.className = "card"; card.setAttribute("aria-live", "polite"); const brand = document.createElement("header"); brand.className = "brand"; brand.innerHTML = `<span class="mark" aria-hidden="true">G</span><div><p class="eyebrow">${copy.eyebrow}</p><p class="brand-name">GluMizan</p></div>`; const content = document.createElement("div"); content.className = "content"; const icon = document.createElement("div"); icon.className = `icon${["expired","unavailable","empty"].includes(state) ? " icon--warning" : state === "error" ? " icon--error" : ""}`; icon.setAttribute("aria-hidden", "true"); icon.textContent = state === "linked" ? "✓" : state === "loading" ? "" : state === "pending" ? "↗" : "!"; if (state === "loading") icon.innerHTML = '<span class="spinner"></span>'; const title = document.createElement("h1"); title.textContent = state === "linked" ? copy.linked : state === "expired" ? copy.expired : state === "error" ? copy.error : state === "empty" ? copy.empty : state === "unavailable" ? copy.unavailable : copy.title; const message = document.createElement("p"); message.textContent = state === "linked" ? copy.linkedDetail : ["expired","unavailable","empty"].includes(state) ? copy.unavailableDetail : state === "loading" ? copy.loading : copy.pending; content.append(icon,title,message); if (state === "pending") { const security = document.createElement("p"); security.className = "security"; security.textContent = `⌁ ${copy.security}`; content.append(security); } if (state === "pending" || state === "error") { const actions = document.createElement("div"); actions.className = "actions"; if (state === "pending") { const confirm = document.createElement("button"); confirm.className = "primary"; confirm.type = "button"; confirm.textContent = copy.confirm; confirm.addEventListener("click", () => this._submit("complete")); const cancel = document.createElement("button"); cancel.className = "secondary"; cancel.type = "button"; cancel.textContent = copy.cancel; cancel.addEventListener("click", () => this._submit("cancel")); actions.append(confirm,cancel); } else { const retry = document.createElement("button"); retry.className = "primary"; retry.type = "button"; retry.textContent = copy.retry; retry.addEventListener("click", () => this._load()); actions.append(retry); } content.append(actions); } card.append(brand,content); root.append(card); const style = document.createElement("style"); style.textContent = STYLE; root.prepend(style); this.replaceChildren(root); }
 }
 
 customElements.define("glumizan-account-link-panel", GlumizanAccountLinkPanel);

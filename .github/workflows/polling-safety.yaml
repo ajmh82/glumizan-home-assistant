@@ -1,0 +1,22 @@
+name: Validate GluMizan Polling Safety
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  polling-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate syntax and run isolated polling-policy safety tests
+        run: |
+          python -m py_compile custom_components/glumizan/coordinator.py
+          python -m unittest discover -s tests -p 'test_*.py' -v
